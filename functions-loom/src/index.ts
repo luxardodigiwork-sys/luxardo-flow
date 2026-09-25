@@ -27,6 +27,7 @@ export {
   karigarCreate,
   karigarUpdate,
 } from "../../functions/src/production";
+export { userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "../../functions/src/production";
 
 /* Phase 2 · Block 2.1 — Catalogue Design management + version preservation */
 export {

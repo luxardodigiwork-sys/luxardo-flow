@@ -26,6 +26,28 @@ export const CANONICAL_STAFF_ROLES = [
 ] as const;
 export type CanonicalStaffRole = (typeof CANONICAL_STAFF_ROLES)[number];
 
+/* ────────────────────────── DEPARTMENTS ────────────────────────────────
+ * Purely descriptive/organisational — a controlled list for the User
+ * Profile "department" field. Department is INTENTIONALLY never consulted
+ * by any authorization check (can()/hasAnyRole()/isAdmin()/requireStaff()):
+ * changing a User's department must never grant or imply a permission.
+ * Role remains the ONLY concept authorization decisions are based on. Keep
+ * in sync with src/constants/businessConfig.ts (frontend mirror).
+ * ─────────────────────────────────────────────────────────────────────── */
+export const CANONICAL_DEPARTMENTS = [
+  "Management",
+  "Design",
+  "Production",
+  "Planning",
+  "Dispatch",
+  "Quality Control",
+  "Tailoring",
+  "Store",
+  "Accounts",
+  "Analysis",
+] as const;
+export type CanonicalDepartment = (typeof CANONICAL_DEPARTMENTS)[number];
+
 /**
  * Known legacy / typo role strings that map to a canonical role.
  * Applied ONLY by the sanctioned staffBackfillCustomerDocs repair job

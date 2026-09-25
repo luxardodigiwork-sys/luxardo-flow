@@ -10,6 +10,7 @@ import {
   Pencil, AlertCircle, Package, ChevronRight
 } from 'lucide-react';
 import type { ProductionRequestDoc, PRAuditDoc } from '../../types/production';
+import { useScrollLock } from '../../utils/useScrollLock';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -52,6 +53,8 @@ export default function ProductionRequestDetailPage() {
   // Generate Pieces dialog
   const [showGenerate, setShowGenerate] = useState(false);
   const [genCount, setGenCount] = useState<number>(0);
+
+  useScrollLock(showReject || showPostEdit || showGenerate);
 
   const effectiveRole = user?.staffRole || user?.role || '';
   const isPM = effectiveRole === 'pm';

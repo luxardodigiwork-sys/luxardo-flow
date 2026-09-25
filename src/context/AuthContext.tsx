@@ -1,15 +1,16 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { normalizeStaffRole, isLoomHost, privilegedRoleForEmail } from '../utils/loomIdentity';
+import { ResolutionChannel } from '../utils/resolutionChannel';
 
 const MASTER_ADMIN_EMAIL = 'luxardodigiwork@gmail.com';
 // Loom-only localStorage key (no B2C branding; distinct from the B2C key so the
 // two apps never read each other's cached identity).
 const LOOM_USER_KEY = 'LUXARDO_FLOW_user';
 
-interface User {
+export interface User {
   id: string;
   name: string;
   email?: string;
@@ -44,6 +45,19 @@ interface AuthContextType {
   loginAdmin: (email: string, password: string) => Promise<void>;
   resetPassword: (email: string, resetCode: string, newPassword: string) => Promise<void>;
   upgradeToPrime: () => void;
+  /**
+   * LUXARDO FLOW (Loom) only — awaits the SINGLE authoritative staff-identity
+   * resolution (the same one `onAuthStateChanged` below performs and stores
+   * in `user`) for a given Firebase uid, instead of re-reading staff/{uid}
+   * independently. See RoleLoginPage's `common` verifyRole() branch: a caller
+   * must never do its own redundant getDoc + signOut() on top of this — that
+   * was the auth race (two independent reads of the same doc, one of
+   * which could sign the user back out after the other had already approved
+   * and navigated them in). Resolves to the resolved Loom `User` (or `null`
+   * if not a recognised staff identity) once AuthContext's own resolution for
+   * that uid completes; rejects if it doesn't complete within `timeoutMs`.
+   */
+  waitForResolution: (uid: string, timeoutMs?: number) => Promise<User | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -51,6 +65,14 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+
+  // Loom-only single-resolution channel (see `waitForResolution` in
+  // AuthContextType above, and src/utils/resolutionChannel.ts for the race
+  // this exists to close). settle() is called exactly once, by
+  // onAuthStateChanged below — the one authoritative resolver.
+  const loomResolutionRef = useRef(new ResolutionChannel<User | null>());
+  const waitForResolution = (uid: string, timeoutMs?: number) =>
+    loomResolutionRef.current.wait(uid, timeoutMs);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -111,6 +133,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setUser(null);
               try { localStorage.removeItem(LOOM_USER_KEY); } catch {}
             }
+            // Hand the SAME resolution to anyone awaiting it (RoleLoginPage's
+            // common login) instead of letting them re-read staff/{uid} on
+            // their own — that redundant second read was the race that could
+            // sign a just-approved session back out.
+            loomResolutionRef.current.settle(firebaseUser.uid, loomUser);
             return; // finally{} still runs setIsAuthReady(true)
           }
 
@@ -249,7 +276,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsAuthReady(true);
       }
     });
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      // Don't leave any in-flight waitForResolution() caller hanging until its
+      // own timeout if the provider itself unmounts.
+      loomResolutionRef.current.dispose(null);
+    };
   }, []);
 
   const login = (userData: User) => {
@@ -322,6 +354,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider value={{
       user, isLoggedIn: !!user, isAuthReady, logout, login,
       updateUserPreferences, loginAdmin, resetPassword, upgradeToPrime,
+      waitForResolution,
     }}>
       {children}
     </AuthContext.Provider>

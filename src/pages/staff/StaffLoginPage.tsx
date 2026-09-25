@@ -14,7 +14,7 @@ export default function StaffLoginPage() {
   return (
     <RoleLoginPage
       common
-      roleLabel="STAFF"
+      roleLabel="USER"
       allowedRoles={[
         'owner', 'admin', 'designer', 'pm', 'dispatch',
         'guard', 'tailor', 'store', 'accounts', 'analysis',
@@ -22,7 +22,7 @@ export default function StaffLoginPage() {
       redirectPath="/production"
       lockKey="loom_staff_lock"
       attemptsKey="loom_staff_attempts"
-      tagline="LUXARDO FLOW production staff"
+      tagline="LUXARDO FLOW authorised users"
     />
   );
 }

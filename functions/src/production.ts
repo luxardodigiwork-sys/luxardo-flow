@@ -20,6 +20,7 @@ import {
   normalizeStaffRole,
   CanonicalStaffRole,
   requireStaff,
+  CANONICAL_DEPARTMENTS,
 } from "./staffAuth";
 
 const db = admin.firestore();
@@ -183,9 +184,85 @@ export const nextId = onCall(async (request) => {
  * ═══════════════════════════════════════════════════════════════════ */
 
 const VALID_STAFF_ROLES = new Set<string>(CANONICAL_STAFF_ROLES as readonly string[]);
+const VALID_DEPARTMENTS = new Set<string>(CANONICAL_DEPARTMENTS as readonly string[]);
 
 /** E.164 phone format (+ followed by 8-15 digits) — required for Firebase Auth phone sign-in. */
 const E164_RE = /^\+[1-9]\d{7,14}$/;
+/** HH:MM 24-hour, e.g. "09:30" — kept deliberately simple, no timezone handling. */
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** YYYY-MM-DD — Firestore stores dates as ISO strings throughout this module. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Validates the USER-PROFILE fields (department/ratePerDay/workingHours/
+ * joiningDate/employeeId/notes/profilePhotoUrl) shared by staffUpdate
+ * (admin, any target uid) and userProfileSelfUpdate (self only, narrower
+ * whitelist). Throws HttpsError on the first invalid field. Never touches
+ * role/active/email/phoneNumber — those keep their own existing validation.
+ */
+function validateProfilePatch(patch: Record<string, unknown>): void {
+  if (patch.department !== undefined) {
+    const d = String(patch.department ?? "").trim();
+    if (d && !VALID_DEPARTMENTS.has(d)) {
+      throw new HttpsError("invalid-argument", `Invalid department: ${d}`);
+    }
+    patch.department = d || null;
+  }
+  if (patch.ratePerDay !== undefined) {
+    const n = patch.ratePerDay;
+    if (n !== null && (typeof n !== "number" || !Number.isFinite(n) || n < 0)) {
+      throw new HttpsError("invalid-argument", "ratePerDay must be a non-negative number.");
+    }
+  }
+  if (patch.joiningDate !== undefined) {
+    const jd = patch.joiningDate;
+    if (jd !== null && (typeof jd !== "string" || !ISO_DATE_RE.test(jd))) {
+      throw new HttpsError("invalid-argument", "joiningDate must be YYYY-MM-DD.");
+    }
+  }
+  if (patch.employeeId !== undefined) {
+    const eid = patch.employeeId;
+    if (eid !== null && (typeof eid !== "string" || eid.length > 64)) {
+      throw new HttpsError("invalid-argument", "employeeId must be a string up to 64 characters.");
+    }
+  }
+  if (patch.notes !== undefined) {
+    const n = patch.notes;
+    if (n !== null && (typeof n !== "string" || n.length > 2000)) {
+      throw new HttpsError("invalid-argument", "notes must be a string up to 2000 characters.");
+    }
+  }
+  if (patch.profilePhotoUrl !== undefined) {
+    const url = patch.profilePhotoUrl;
+    if (url !== null && (typeof url !== "string" || url.length > 2048 || !/^https:\/\//.test(url))) {
+      throw new HttpsError("invalid-argument", "profilePhotoUrl must be an https URL.");
+    }
+  }
+  if (patch.workingHours !== undefined) {
+    const wh = patch.workingHours;
+    if (wh !== null) {
+      if (typeof wh !== "object" || Array.isArray(wh)) {
+        throw new HttpsError("invalid-argument", "workingHours must be an object with start/end.");
+      }
+      const { start, end } = wh as Record<string, unknown>;
+      if (typeof start !== "string" || !HHMM_RE.test(start) || typeof end !== "string" || !HHMM_RE.test(end)) {
+        throw new HttpsError("invalid-argument", "workingHours.start/end must be HH:MM (24-hour).");
+      }
+      const [sh, sm] = start.split(":").map(Number);
+      const [eh, em] = end.split(":").map(Number);
+      let totalMinutes = (eh * 60 + em) - (sh * 60 + sm);
+      if (totalMinutes < 0) totalMinutes += 24 * 60; // overnight shift
+      patch.workingHours = { start, end, totalHours: Math.round((totalMinutes / 60) * 100) / 100 };
+    }
+  }
+  if (patch.displayName !== undefined) {
+    const dn = patch.displayName;
+    if (typeof dn !== "string" || !dn.trim() || dn.length > 200) {
+      throw new HttpsError("invalid-argument", "displayName must be a non-empty string up to 200 characters.");
+    }
+    patch.displayName = dn.trim();
+  }
+}
 
 /** Shape of the customers/{uid} compatibility mirror for a staff member. */
 function staffCustomerMirror(
@@ -362,8 +439,15 @@ export const staffUpdate = onCall(async (request) => {
   if (!snap.exists) throw new HttpsError("not-found", `Staff doc ${uid} not found.`);
   const before = snap.data()!;
 
-  // Whitelist allowed fields
-  const allowed = ["displayName", "email", "role", "active", "phoneNumber"];
+  // Whitelist allowed fields. Admin-only path — every field on the User
+  // Profile is writable here (unlike userProfileSelfUpdate's narrower
+  // self-service subset below), since the caller already passed
+  // requireAdmin() above.
+  const allowed = [
+    "displayName", "email", "role", "active", "phoneNumber",
+    "department", "profilePhotoUrl", "ratePerDay", "workingHours",
+    "joiningDate", "employeeId", "notes",
+  ];
   const patch: Record<string, unknown> = {};
   for (const k of allowed) {
     if (k in updates) patch[k] = updates[k];
@@ -378,6 +462,7 @@ export const staffUpdate = onCall(async (request) => {
     }
     patch.role = canonicalRole;
   }
+  validateProfilePatch(patch);
 
   // phoneNumber lives on the Firebase Auth record (native phone-sign-in
   // credential) — staff/{uid}.phoneNumber below is only a display mirror.
@@ -428,6 +513,215 @@ export const staffUpdate = onCall(async (request) => {
   }
 
   return { ok: true };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * userProfileSelfUpdate — a signed-in Loom User updating THEIR OWN
+ * profile. Deliberately narrower than staffUpdate: no admin check (any
+ * signed-in staff/{uid} identity may call it), but restricted to a small,
+ * low-risk self-service field whitelist. Business-sensitive fields
+ * (department, ratePerDay, workingHours, joiningDate, employeeId, notes,
+ * role, active) stay admin-only via staffUpdate — a User can update their
+ * own photo/name/phone, never their own pay rate or department.
+ *
+ * Input : { updates: { displayName?, profilePhotoUrl?, phoneNumber? } }
+ * Output: { ok: true }
+ * ═══════════════════════════════════════════════════════════════════ */
+
+export const userProfileSelfUpdate = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const uid = request.auth.uid;
+
+  const { updates } = request.data as { updates?: Record<string, unknown> };
+  if (!updates || typeof updates !== "object") {
+    throw new HttpsError("invalid-argument", "updates object required.");
+  }
+
+  const ref = db.doc(`staff/${uid}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "Your staff profile was not found.");
+  const before = snap.data()!;
+
+  const selfAllowed = ["displayName", "profilePhotoUrl", "phoneNumber"];
+  const patch: Record<string, unknown> = {};
+  for (const k of selfAllowed) {
+    if (k in updates) patch[k] = updates[k];
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new HttpsError("invalid-argument", "No valid self-editable fields to update.");
+  }
+  validateProfilePatch(patch);
+
+  if (patch.phoneNumber !== undefined) {
+    const raw = String(patch.phoneNumber ?? "").trim();
+    if (raw && !E164_RE.test(raw)) {
+      throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+    }
+    try {
+      await admin.auth().updateUser(uid, { phoneNumber: raw || null });
+    } catch (err: any) {
+      throw new HttpsError("invalid-argument", err?.message || "Could not update phone number on the Auth account.");
+    }
+    patch.phoneNumber = raw || null;
+  }
+
+  const now = new Date().toISOString();
+  patch.updatedAt = now;
+
+  const mirror: Record<string, unknown> = { updatedAt: now, staffLinked: true };
+  if (patch.displayName !== undefined) mirror.name = patch.displayName;
+
+  const batch = db.batch();
+  batch.set(ref, patch, { merge: true });
+  batch.set(db.doc(`customers/${uid}`), mirror, { merge: true });
+  await batch.commit();
+
+  await writeAudit("STAFF_UPDATE", "staff", uid, uid, before.displayName || "Self", before.role || "",
+    { displayName: before.displayName, phoneNumber: before.phoneNumber ?? null },
+    { displayName: patch.displayName ?? before.displayName, phoneNumber: patch.phoneNumber !== undefined ? patch.phoneNumber : (before.phoneNumber ?? null) },
+    "Self-service profile update");
+
+  return { ok: true };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * MOBILE-OTP PASSWORD RECOVERY — mobileResetLookup + mobileResetSendOtp
+ *
+ * Two-phase, so the full E.164 phone number is NEVER part of the response
+ * to the initial, bare-email lookup:
+ *
+ *   mobileResetLookup(email) -> { eligible, maskedLast4, recoveryToken }
+ *     Called UNAUTHENTICATED. Resolves email -> the AUTHORITATIVE stored
+ *     mobile number, but returns ONLY its last 4 digits plus a short-lived
+ *     (5 min), single-use, server-issued recoveryToken (mobileResetTokens/
+ *     {token}, keyed by uid only — the phone number itself is never
+ *     persisted in the token doc). The full number stays server-side.
+ *
+ *   mobileResetSendOtp(recoveryToken) -> { phoneNumber }
+ *     Called only after the User explicitly confirms the masked number on
+ *     screen. Re-validates the token (exists / not used / not expired),
+ *     re-resolves eligibility FRESH (fail-closed against anything that
+ *     changed in the window since the lookup), marks the token used, and
+ *     ONLY THEN returns the phone number — the single moment the client
+ *     needs it to call signInWithPhoneNumber(). There is no way to trigger
+ *     Firebase's client-driven phone-auth SMS challenge without the
+ *     browser holding the exact number for that one call; gating its
+ *     release behind an explicit-confirmation-only, single-use, 5-minute
+ *     token is the safest architecture achievable within that constraint,
+ *     without reimplementing Firebase's own (undocumented, unsupported)
+ *     server-side verification REST calls.
+ *
+ * Eligibility (both functions, identical logic): a recognised Loom
+ * identity (canonical staff role OR the literal "super_admin" value some
+ * staff/{uid} docs carry — see the isRecognisedRecoveryRole comment below)
+ * that is active and has a phone number on the Auth record. Owner, Admin
+ * and Super Admin are NOT excluded here — recovering a password via mobile
+ * OTP is independent of LOGIN routing: Admin/Super Admin still sign in
+ * exclusively via /admin/login (AdminLoginPage.tsx, unchanged, its own
+ * real Gmail-based email reset untouched) regardless of which mechanism
+ * last reset their password. Only the identify-time rate limit (client's
+ * existing checkLocalLock/recordLocalFailure) throttles repeated lookups.
+ *
+ * Input : { email: string } / { recoveryToken: string }
+ * Output: { eligible: false, reason: 'not_found'|'inactive'|'no_mobile' }
+ *       | { eligible: true, maskedLast4: string, recoveryToken: string }
+ *       ---
+ *       | { phoneNumber: string }  (mobileResetSendOtp only)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+const RECOVERY_TOKEN_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * True for any role a mobile-OTP recovery request may resolve to: every
+ * CANONICAL_STAFF_ROLES value, PLUS the literal "super_admin" string —
+ * some staff/{uid} docs (the Super Admin's own) carry role:"super_admin",
+ * which normalizeStaffRole()/CANONICAL_STAFF_ROLES deliberately does NOT
+ * include (it's an elevated identity, never assignable via staffCreate/
+ * staffUpdate) — mirrors the client's isStaffRoleOrSuperAdmin() precedent
+ * (src/utils/loomIdentity.ts) so "super_admin" isn't silently treated as
+ * an unrecognised role purely on a terminology technicality.
+ */
+function isRecognisedRecoveryRole(role: unknown): boolean {
+  const r = String(role || "").toLowerCase().trim();
+  return r === "super_admin" || !!normalizeStaffRole(r);
+}
+
+/** Shared eligibility resolution for both recovery functions. */
+async function resolveRecoveryEligibility(uid: string): Promise<
+  | { ok: false; reason: "not_found" | "inactive" | "no_mobile" }
+  | { ok: true; phone: string }
+> {
+  const userRecord = await admin.auth().getUser(uid).catch(() => null);
+  if (!userRecord) return { ok: false, reason: "not_found" };
+
+  const staffSnap = await db.doc(`staff/${uid}`).get();
+  if (!staffSnap.exists) return { ok: false, reason: "not_found" };
+  const data = staffSnap.data()!;
+
+  if (!isRecognisedRecoveryRole(data.role)) return { ok: false, reason: "not_found" };
+  if (data.active === false) return { ok: false, reason: "inactive" };
+
+  // The Auth record is the actual credential; staff/{uid}.phoneNumber is
+  // only ever a display mirror of it — prefer the Auth record.
+  const phone = userRecord.phoneNumber || data.phoneNumber || null;
+  if (!phone) return { ok: false, reason: "no_mobile" };
+
+  return { ok: true, phone };
+}
+
+export const mobileResetLookup = onCall(async (request) => {
+  const { email } = request.data as { email?: string };
+  if (!email || typeof email !== "string") {
+    throw new HttpsError("invalid-argument", "email is required.");
+  }
+  const normalizedEmail = email.trim().toLowerCase();
+
+  let userRecord;
+  try {
+    userRecord = await admin.auth().getUserByEmail(normalizedEmail);
+  } catch {
+    return { eligible: false, reason: "not_found" };
+  }
+
+  const result = await resolveRecoveryEligibility(userRecord.uid);
+  if (result.ok === false) return { eligible: false, reason: result.reason };
+
+  const token = crypto.randomBytes(24).toString("base64url");
+  const now = Date.now();
+  await db.doc(`mobileResetTokens/${token}`).set({
+    uid: userRecord.uid,
+    createdAt: now,
+    expiresAt: now + RECOVERY_TOKEN_TTL_MS,
+    used: false,
+  });
+
+  return { eligible: true, maskedLast4: result.phone.slice(-4), recoveryToken: token };
+});
+
+export const mobileResetSendOtp = onCall(async (request) => {
+  const { recoveryToken } = request.data as { recoveryToken?: string };
+  if (!recoveryToken || typeof recoveryToken !== "string") {
+    throw new HttpsError("invalid-argument", "recoveryToken is required.");
+  }
+
+  const invalidOrExpired = () =>
+    new HttpsError("permission-denied", "This recovery session is invalid or has expired. Please start again.");
+
+  const ref = db.doc(`mobileResetTokens/${recoveryToken}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw invalidOrExpired();
+  const tokenData = snap.data()!;
+  if (tokenData.used || Date.now() > tokenData.expiresAt) throw invalidOrExpired();
+
+  // Re-resolve fresh — fail closed against anything that changed (account
+  // deactivated, phone removed, etc.) in the window since the lookup.
+  const result = await resolveRecoveryEligibility(String(tokenData.uid));
+  if (!result.ok) throw invalidOrExpired();
+
+  // Single-use: mark consumed before returning the number.
+  await ref.update({ used: true, usedAt: Date.now() });
+
+  return { phoneNumber: result.phone };
 });
 
 /* ═══════════════════════════════════════════════════════════════════

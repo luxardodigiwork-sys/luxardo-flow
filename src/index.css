@@ -28,6 +28,32 @@
   h1, h2, h3, h4, h5, h6 {
     @apply font-display;
   }
+
+  /* Buttons show the default arrow cursor unless told otherwise (Tailwind's
+     preflight sets no cursor rule for <button>) — interactive controls need
+     an explicit pointer, and disabled ones an explicit "blocked" cursor. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  select,
+  label[for] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  select:disabled,
+  input:disabled,
+  textarea:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Fallback keyboard-focus outline — the app's own focus rings are often a
+     near-invisible 5% black tint, which leaves keyboard navigation with no
+     visible indicator. Only fires for keyboard/programmatic focus. */
+  :focus-visible {
+    outline: 2px solid black;
+    outline-offset: 2px;
+  }
 }
 
 @layer components {

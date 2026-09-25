@@ -128,3 +128,45 @@ export function privilegedRoleForEmail(email: unknown): "super_admin" | "admin" 
 export function isStaffRoleOrSuperAdmin(role: unknown): boolean {
   return role === "super_admin" || isCanonicalStaffRole(role);
 }
+
+/**
+ * Shared fail-closed eligibility check for the LUXARDO FLOW common login page
+ * AND the mobile-OTP password-reset flow: an identity is only usable there
+ * when it is an ACTIVE canonical staff/{uid} role (Owner included — Owner is
+ * not excluded from this, per the User/Owner/Staff model) and NOT one of the
+ * two privileged Gmail identities (those use the dedicated /admin/login page
+ * and its own real Firebase password reset, never this mechanism).
+ * `active` may be omitted when the caller has already filtered for it.
+ */
+export function isEligibleLoomIdentity(
+  email: unknown,
+  role: unknown,
+  active?: unknown,
+): boolean {
+  if (isPrivilegedEmail(email)) return false;
+  if (active === false) return false;
+  return isCanonicalStaffRole(role);
+}
+
+/**
+ * Eligibility for mobile-OTP PASSWORD RECOVERY specifically — deliberately
+ * NOT the same gate as isEligibleLoomIdentity() (used by LOGIN routing
+ * above). Recovering a password is independent of which page a User
+ * ultimately signs in on: Owner, Admin and Super Admin must all be able to
+ * use this mechanism (not silently excluded by role/email terminology),
+ * while Admin/Super Admin still sign in exclusively via the dedicated
+ * /admin/login page (AdminLoginPage.tsx, unchanged, its own real
+ * Gmail-based email reset untouched) — this function only decides "may a
+ * password be reset via mobile OTP", never "which page may sign in".
+ * Accepts the literal "super_admin" role value too (mirrors
+ * isStaffRoleOrSuperAdmin() below) since some staff/{uid} docs carry it and
+ * it's deliberately excluded from CANONICAL_STAFF_ROLES for unrelated
+ * (assignability) reasons — a naming technicality, not a genuine
+ * ineligibility. Server mirror: functions/src/production.ts
+ * isRecognisedRecoveryRole().
+ */
+export function isEligibleForMobileRecovery(role: unknown, active?: unknown): boolean {
+  if (active === false) return false;
+  const r = String(role ?? "").toLowerCase().trim();
+  return r === "super_admin" || isCanonicalStaffRole(r);
+}

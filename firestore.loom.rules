@@ -169,6 +169,15 @@ service cloud.firestore {
       allow read, write: if false; // Cloud Functions only (Admin SDK bypasses rules)
     }
 
+    /* ── Mobile-OTP recovery tokens (short-lived, server-managed) ─────── *
+     * Written/read/consumed only by mobileResetLookup / mobileResetSendOtp
+     * via the Admin SDK (bypasses rules) — a client must never be able to
+     * read another session's token doc or forge its own `used`/`expiresAt`.
+     * Already covered by the catch-all deny below; explicit for clarity. */
+    match /mobileResetTokens/{token} {
+      allow read, write: if false;
+    }
+
     /* ── Deny-all (catch-all) ───────────────────────────────────────── */
     match /{document=**} { allow read, write: if false; }
   }

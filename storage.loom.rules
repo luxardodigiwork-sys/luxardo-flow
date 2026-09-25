@@ -47,6 +47,13 @@ service firebase.storage {
     match /production/tailor/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['tailor'])) && isImage() && maxSize(10); }
     match /production/store/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['store', 'dispatch'])) && maxSize(10); }
 
+    /* User Profile photo — self-or-admin write, same isImage()+maxSize()
+     * boundary as every other production/ path above. {uid} in the path
+     * is the User's own uid, so a plain uid-equality check (no Firestore
+     * role lookup needed) is enough to gate self-upload; isAdmin() covers
+     * an admin setting/replacing another User's photo. */
+    match /production/profiles/{uid}/{p=**} { allow read: if isSignedIn(); allow write: if isSignedIn() && (request.auth.uid == uid || isAdmin()) && isImage() && maxSize(5); }
+
     /* ── Deny-all ─────────────────────────────────────────────────────── */
     match /{p=**} { allow read, write: if false; }
   }

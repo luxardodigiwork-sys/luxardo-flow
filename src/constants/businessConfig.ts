@@ -78,7 +78,21 @@ export const PRODUCTION_CONFIG = {
   ] as const,
   defaultHourlyRateRange: { min: 50, max: 500 },
   qcChecklistDefaults: ["fabric_integrity", "pattern_accuracy", "finish_quality"],
-  productionRoles: ["owner", "admin", "designer", "pm", "dispatch", "guard", "tailor", "store"] as const,
+  // Operational production personnel only, selectable from the generic
+  // "Add Staff Member" form. Owner is a privileged account, not ordinary
+  // staff, and must not be mintable from this form; "admin" was a dead
+  // option here too — the real Admin identity is resolved by hardcoded
+  // email (src/utils/loomIdentity.ts), never by a staff/{uid} role string,
+  // so picking it here could never have granted real Admin access.
+  productionRoles: ["designer", "pm", "dispatch", "guard", "tailor", "store"] as const,
+  // Purely descriptive User Profile field — kept in sync with
+  // functions/src/staffAuth.ts CANONICAL_DEPARTMENTS. Never consulted by
+  // any authorization check; changing a User's department never grants a
+  // permission.
+  departments: [
+    "Management", "Design", "Production", "Planning", "Dispatch",
+    "Quality Control", "Tailoring", "Store", "Accounts", "Analysis",
+  ] as const,
 };
 
 export function isCODEligible(pinCode: string): boolean {

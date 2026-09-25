@@ -108,7 +108,7 @@ export default function ProductionRequestListPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead>
+              <thead className="sticky-table-header">
                 <tr className="border-b border-gray-100">
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">PR ID</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Design</th>

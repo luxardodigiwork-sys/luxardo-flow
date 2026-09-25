@@ -579,10 +579,46 @@ export interface ReplacementLinkDoc {
 /* ──────────────────────────── STAFF ────────────────────────────── */
 
 /**
+ * Controlled department list for the User Profile "department" field.
+ * Purely descriptive/organisational — department is NEVER consulted by any
+ * authorization check (can()/hasAnyRole()/isAdmin()). Role is the only
+ * concept authorization decisions are based on. Keep in sync with
+ * functions/src/staffAuth.ts CANONICAL_DEPARTMENTS (server source of truth)
+ * and src/constants/businessConfig.ts (the actual list used by the UI).
+ */
+export type Department =
+  | "Management"
+  | "Design"
+  | "Production"
+  | "Planning"
+  | "Dispatch"
+  | "Quality Control"
+  | "Tailoring"
+  | "Store"
+  | "Accounts"
+  | "Analysis";
+
+export interface WorkingHours {
+  start: string; // "HH:MM", 24-hour
+  end: string;   // "HH:MM", 24-hour
+  totalHours: number; // computed server-side from start/end on every write
+}
+
+/**
  * Collection: staff
  * Staff identity doc — admin-only CRUD, own read.
  * Role: owner | admin | designer | pm | dispatch | guard | tailor | store
  *   (accounts/analysis are e-commerce roles, preserved).
+ *
+ * This is also the authoritative User Profile for LUXARDO FLOW — "User" is
+ * the general authenticated-account concept (Owner/Admin/Super Admin
+ * included, not just operational Staff); the collection itself stays named
+ * `staff` for backend/rule compatibility. The profile fields below
+ * (department onward) are additive and optional: a User created before
+ * this model existed simply has them unset until an administrator (or the
+ * User themself, for the small self-editable subset — see
+ * userProfileSelfUpdate) provides them. Nothing here is ever guessed or
+ * auto-populated.
  */
 export interface StaffDoc {
   uid: string; // Firebase Auth uid
@@ -591,12 +627,32 @@ export interface StaffDoc {
   role: StaffRole;
   active: boolean;
   /** Display mirror of the Firebase Auth record's phone number (E.164). The
-   *  Auth record is the actual phone-sign-in credential; this field is only
-   *  for admin-UI display/lookup. */
+   *  Auth record is the actual phone-sign-in credential AND the sole
+   *  authoritative source for mobile-OTP password recovery; this field is
+   *  only for admin-UI display/lookup. */
   phoneNumber?: string | null;
   createdAt: string;
   updatedAt: string;
   createdBy: string;
+
+  // ── User Profile fields (additive, optional, admin-provisioned unless
+  // noted as self-editable) ──────────────────────────────────────────
+  /** https URL into Storage `production/profiles/{uid}/...`. Self-editable. */
+  profilePhotoUrl?: string | null;
+  /** One of Department above. Admin-only — never grants permissions. */
+  department?: Department | null;
+  /** ₹/day. Admin-only (business-sensitive). */
+  ratePerDay?: number | null;
+  /** Admin-only. */
+  workingHours?: WorkingHours | null;
+  /** ISO date (YYYY-MM-DD). Admin-only. */
+  joiningDate?: string | null;
+  /** Free-form internal ID, distinct from the Firebase uid. Admin-only. */
+  employeeId?: string | null;
+  /** Admin-only field AND admin-only visibility — never rendered to the
+   *  User themself, only to admin/super_admin/owner viewing the profile. */
+  notes?: string | null;
+  lastActiveAt?: string | null;
 }
 
 /* ────────────────────────── AUDIT LOG ──────────────────────────── */

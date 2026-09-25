@@ -13,9 +13,11 @@ import {
   ConfirmationResult,
   updatePassword,
 } from 'firebase/auth';
-import { auth, db } from '../../firebase';
+import { auth, db, functions } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { normalizeStaffRole, isCanonicalStaffRole, isPrivilegedEmail } from '../../utils/loomIdentity';
+import { httpsCallable } from 'firebase/functions';
+import { normalizeStaffRole, isCanonicalStaffRole, isPrivilegedEmail, isEligibleLoomIdentity, isEligibleForMobileRecovery } from '../../utils/loomIdentity';
+import { isValidE164, toE164 } from '../../utils/phone';
 import PhoneInput from 'react-phone-input-2';
 import 'react-phone-input-2/lib/style.css';
 
@@ -58,7 +60,7 @@ export default function RoleLoginPage({
 }: RoleLoginConfig) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, isAuthReady } = useAuth();
+  const { user, isAuthReady, waitForResolution } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'reset'>('login');
   const [email, setEmail] = useState('');
@@ -77,7 +79,21 @@ export default function RoleLoginPage({
   // staffUpdate) — no separate backend/lookup mechanism is introduced.
   const [loginTab, setLoginTab] = useState<'password' | 'phone'>('password');
   const [phoneLoginStep, setPhoneLoginStep] = useState<'enter' | 'otp'>('enter');
-  const [resetStep, setResetStep] = useState<'enter' | 'otp'>('enter');
+  // Mobile-OTP password recovery (common/LUXARDO FLOW only) — the phone
+  // number is NEVER something the requester types. 'identify': enter the
+  // account email. 'confirm': show only the masked last-4 digits of the
+  // AUTHORITATIVE stored number and require explicit confirmation before
+  // anything is sent. 'otp': verify the code + set the new password.
+  const [resetStep, setResetStep] = useState<'identify' | 'confirm' | 'otp'>('identify');
+  const [resetEmailValue, setResetEmailValue] = useState('');
+  const [resetLookupLoading, setResetLookupLoading] = useState(false);
+  const [resetMaskedLast4, setResetMaskedLast4] = useState<string | null>(null);
+  // Opaque, short-lived, single-use token from mobileResetLookup — NOT the
+  // phone number. Exchanged for the real number (mobileResetSendOtp) only
+  // at the instant "Send OTP" is clicked; that number is passed straight
+  // into signInWithPhoneNumber() and never stored in any React state or
+  // rendered anywhere.
+  const resetRecoveryTokenRef = useRef<string | null>(null);
   const [phoneValue, setPhoneValue] = useState('');
   const [otpValue, setOtpValue] = useState('');
   const [newPasswordValue, setNewPasswordValue] = useState('');
@@ -173,28 +189,42 @@ export default function RoleLoginPage({
 
   const resetPhoneFlowState = () => {
     setPhoneValue(''); setOtpValue(''); setNewPasswordValue(''); setConfirmPasswordValue('');
-    setConfirmationResult(null); setPhoneLoginStep('enter'); setResetStep('enter'); setError(''); setOkMsg('');
+    setConfirmationResult(null); setPhoneLoginStep('enter'); setError(''); setOkMsg('');
+    // STEP 9 — invalidate all temporary recovery state, including the
+    // never-displayed authoritative number, on completion/cancel/back-nav.
+    setResetStep('identify'); setResetEmailValue(''); setResetMaskedLast4(null);
+    resetRecoveryTokenRef.current = null;
   };
 
   const verifyRole = async (uid: string) => {
     // ── Common LUXARDO FLOW staff login ──────────────────────────────
-    // Ordinary staff only. Identity/role come from staff/{uid} (the sole
-    // client-readable role source on the Loom project). Super Admin and Admin
-    // are turned away — they use the dedicated privileged page.
+    // Ordinary staff only. Super Admin and Admin are turned away — they use
+    // the dedicated privileged page. That check is a plain string compare
+    // (no Firestore round-trip), so it's done immediately and can't race.
+    //
+    // The actual staff/{uid} identity check is NOT re-read here. It is read
+    // exactly once, by AuthContext's onAuthStateChanged listener — the single
+    // authoritative resolver — and awaited via waitForResolution(). A prior
+    // version of this function did its own independent getDoc(staff/{uid})
+    // read here too: AuthContext could approve the user and navigate to
+    // /production while this second, redundant read was still in flight, and
+    // if that second read then hit a transient failure it called signOut()
+    // and killed the session AuthContext had already approved. Awaiting the
+    // one shared resolution removes that race entirely.
     if (common) {
       if (isPrivilegedEmail(auth.currentUser?.email)) {
         await signOut(auth);
         throw new Error('Super Admin / Admin: please sign in on the dedicated admin page.');
       }
-      let staffRole: string | undefined;
+      let resolvedUser;
       try {
-        const staffDoc = await getDoc(doc(db, 'staff', uid));
-        if (staffDoc.exists() && staffDoc.data()?.active !== false) {
-          staffRole = normalizeStaffRole(staffDoc.data()?.role) ?? undefined;
-        }
+        resolvedUser = await waitForResolution(uid);
       } catch {
-        // permission / network error → treated as "no identity" below
+        // waitForResolution's own timeout — treated as "no identity" below.
+        resolvedUser = null;
       }
+      const eligible = !!resolvedUser && isEligibleLoomIdentity(resolvedUser.email, resolvedUser.staffRole);
+      const staffRole = eligible ? resolvedUser!.staffRole : undefined;
       if (!staffRole) {
         await signOut(auth);
         throw new Error('This account is not a recognised LUXARDO FLOW staff member. Contact your administrator.');
@@ -367,11 +397,57 @@ export default function RoleLoginPage({
   };
 
   // ── Mobile-OTP password recovery (common/LUXARDO FLOW only) ─────────────
-  const handleSendResetOtp = async (e: React.FormEvent) => {
+  //
+  // STEP 2-4: identify the User by email, resolve the AUTHORITATIVE stored
+  // mobile number server-side (mobileResetLookup — see functions/src/
+  // production.ts), and check eligibility (exists / active / has a mobile
+  // number). The requester never types a phone number here, and the
+  // response NEVER contains the full number — only its last 4 digits and
+  // an opaque, short-lived, single-use recoveryToken. The number itself
+  // stays server-side until the explicit "Send OTP" confirmation below.
+  const handleIdentifyForReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(''); setOkMsg('');
-    if (!phoneValue || phoneValue.length < 8) {
-      setError('Please enter a valid mobile number with country code.');
+    if (checkLocalLock()) return;
+    const target = resetEmailValue.trim().toLowerCase();
+    if (!target) {
+      setError('Please enter your account email.');
+      return;
+    }
+    setResetLookupLoading(true);
+    try {
+      const lookupFn = httpsCallable(functions, 'mobileResetLookup');
+      const result = await lookupFn({ email: target });
+      const data = result.data as { eligible: boolean; reason?: string; maskedLast4?: string; recoveryToken?: string };
+      if (!data.eligible) {
+        recordLocalFailure();
+        if (data.reason === 'inactive') setError('This User account is inactive. Contact your administrator.');
+        else if (data.reason === 'no_mobile') setError('No mobile number is configured for this User. Contact your administrator.');
+        else setError('This mobile number is not registered for this User.');
+        return;
+      }
+      resetRecoveryTokenRef.current = data.recoveryToken!;
+      setResetMaskedLast4(data.maskedLast4 || null);
+      setResetStep('confirm');
+    } catch (err: any) {
+      recordLocalFailure();
+      setError(err?.message || 'Could not look up this account. Please try again.');
+    } finally {
+      setResetLookupLoading(false);
+    }
+  };
+
+  // STEP 5-6: only when the User explicitly clicks "Send OTP" do we exchange
+  // the recoveryToken for the real number (mobileResetSendOtp — single-use,
+  // re-validates eligibility fresh, server-side). The result is passed
+  // straight into signInWithPhoneNumber() in the same expression — it is
+  // never assigned to a React state variable and never rendered anywhere.
+  const handleConfirmSendOtp = async () => {
+    setError(''); setOkMsg('');
+    const token = resetRecoveryTokenRef.current;
+    if (!token) {
+      setError('Session expired. Please start again.');
+      setResetStep('identify');
       return;
     }
     setLoading(true);
@@ -381,7 +457,10 @@ export default function RoleLoginPage({
         await new Promise((r) => setTimeout(r, 300));
       }
       if (!recaptchaVerifierRef.current) throw new Error('Could not initialize security check. Please refresh the page.');
-      const confirmation = await signInWithPhoneNumber(auth, '+' + phoneValue, recaptchaVerifierRef.current);
+      const sendOtpFn = httpsCallable(functions, 'mobileResetSendOtp');
+      const exchangeResult = await sendOtpFn({ recoveryToken: token });
+      const { phoneNumber } = exchangeResult.data as { phoneNumber: string };
+      const confirmation = await signInWithPhoneNumber(auth, phoneNumber, recaptchaVerifierRef.current);
       setConfirmationResult(confirmation);
       setResetStep('otp');
     } catch (err: any) {
@@ -391,7 +470,6 @@ export default function RoleLoginPage({
       }
       initRecaptcha();
       if (err.code === 'auth/too-many-requests') setError('Too many attempts. Please wait a few minutes and try again.');
-      else if (err.code === 'auth/invalid-phone-number') setError('Invalid mobile number. Please include your country code.');
       else setError(err.message || 'Failed to send OTP. Please check your connection.');
     } finally {
       setLoading(false);
@@ -418,16 +496,20 @@ export default function RoleLoginPage({
       if (!confirmationResult) throw new Error('Session lost. Please request a new code.');
       const cred = await confirmationResult.confirm(otpValue);
 
-      // The phone number itself is not sufficient proof of staff identity —
-      // only a phoneNumber an admin has actually attached to a recognised,
-      // active, canonical-role staff/{uid} account may reset that account's
-      // password. Anything else fails closed (never sets a password on an
-      // arbitrary/orphan phone-auth account).
+      // Defense-in-depth re-check: mobileResetLookup + mobileResetSendOtp
+      // already established eligibility (STEP 2-6) before any OTP was ever
+      // sent. This uses isEligibleForMobileRecovery — deliberately NOT
+      // isEligibleLoomIdentity (the LOGIN gate, which excludes Admin/Super
+      // Admin) — password recovery must work for every eligible User
+      // including Owner, Admin and Super Admin; only LOGIN stays routed to
+      // /admin/login for the latter two. This final check only guards the
+      // (narrow) window between OTP send and OTP verification completing,
+      // e.g. an admin deactivating the account in between. Fails closed.
       const staffSnap = await getDoc(doc(db, 'staff', cred.user.uid));
-      const role = staffSnap.exists() ? normalizeStaffRole(staffSnap.data()?.role) : null;
-      if (!staffSnap.exists() || staffSnap.data()?.active === false || !role) {
+      const data = staffSnap.exists() ? staffSnap.data() : null;
+      if (!isEligibleForMobileRecovery(data?.role, data?.active)) {
         await signOut(auth);
-        throw new Error('This mobile number is not linked to a recognised LUXARDO FLOW staff account. Contact your administrator.');
+        throw new Error('This mobile number is not registered for this User.');
       }
 
       await updatePassword(cred.user, newPasswordValue);
@@ -486,7 +568,7 @@ export default function RoleLoginPage({
             {common ? 'LUXARDO FLOW' : 'LUXARDO'}
           </h1>
           <p className="text-[10px] tracking-[0.4em] text-gray-500 mt-1">
-            {common ? 'STAFF SIGN-IN' : `${roleLabel} ACCESS`}
+            {common ? 'SIGN IN' : `${roleLabel} ACCESS`}
           </p>
         </div>
 
@@ -637,7 +719,7 @@ export default function RoleLoginPage({
                       containerClass="!w-full font-sans"
                       inputClass="!w-full !h-[46px] !pl-14 !bg-white !border !border-gray-300 focus:!border-black transition-colors !rounded-lg !text-sm"
                       buttonClass="!bg-white !border-0 !border-r !border-gray-300 !rounded-l-lg hover:!bg-gray-50"
-                      dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm"
+                      dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm !max-h-56 !overflow-y-auto"
                     />
                   </div>
                   <button
@@ -705,39 +787,64 @@ export default function RoleLoginPage({
             </form>
           )}
 
-          {mode === 'reset' && common && resetStep === 'enter' && (
-            <form onSubmit={handleSendResetOtp} className="space-y-4 relative z-20">
+          {/* STEP 1-2: identify the User by email — never a phone number. */}
+          {mode === 'reset' && common && resetStep === 'identify' && (
+            <form onSubmit={handleIdentifyForReset} className="space-y-4 relative z-20">
               <p className="text-[11px] text-gray-500 leading-relaxed mb-2">
-                Enter the mobile number linked to your LUXARDO FLOW account. We'll send a one-time code to verify it's you.
+                Enter your LUXARDO FLOW account email. If it has a registered mobile number, we'll ask you to confirm it before sending a code.
               </p>
-              <div>
-                <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 mb-2 block">Mobile Number</label>
-                <PhoneInput
-                  country={'in'}
-                  value={phoneValue}
-                  onChange={(phone) => setPhoneValue(phone)}
-                  enableSearch
-                  disableSearchIcon
-                  inputProps={{ name: 'phone', required: true }}
-                  containerClass="!w-full font-sans"
-                  inputClass="!w-full !h-[46px] !pl-14 !bg-white !border !border-gray-300 focus:!border-black transition-colors !rounded-lg !text-sm"
-                  buttonClass="!bg-white !border-0 !border-r !border-gray-300 !rounded-l-lg hover:!bg-gray-50"
-                  dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm"
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                <input
+                  type="email"
+                  value={resetEmailValue}
+                  onChange={(e) => setResetEmailValue(e.target.value)}
+                  placeholder="account email"
+                  className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black"
+                  required
+                  autoComplete="email"
+                  autoFocus
                 />
               </div>
-              <button type="submit" disabled={loading} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading ? 'Sending...' : 'Send OTP'} <Phone size={14} />
+              <button type="submit" disabled={resetLookupLoading} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+                {resetLookupLoading ? 'Checking...' : 'Continue'} <ArrowRight size={14} />
               </button>
               <button type="button" onClick={() => { resetPhoneFlowState(); setMode('login'); }} className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2">Back to sign in</button>
             </form>
+          )}
+
+          {/* STEP 5: masked last-4 confirmation — the full number is never rendered. */}
+          {mode === 'reset' && common && resetStep === 'confirm' && (
+            <div className="space-y-4 relative z-20">
+              <p className="text-[11px] text-gray-500 leading-relaxed mb-2">Confirm this is your registered mobile number.</p>
+              <div className="flex items-center justify-center gap-2 border border-gray-200 rounded-xl py-5 bg-gray-50">
+                <Phone size={16} className="text-gray-400" />
+                <span className="text-lg font-mono tracking-widest text-black">•••••••• {resetMaskedLast4}</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleConfirmSendOtp}
+                disabled={loading}
+                className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {loading ? 'Sending...' : 'Send OTP'} <Phone size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => { setResetStep('identify'); setResetMaskedLast4(null); resetRecoveryTokenRef.current = null; setError(''); }}
+                className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2"
+              >
+                Change / Cancel
+              </button>
+            </div>
           )}
 
           {mode === 'reset' && common && resetStep === 'otp' && (
             <form onSubmit={handleConfirmResetOtp} className="space-y-4 relative z-20">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Verification Code</label>
-                <button type="button" onClick={() => { setResetStep('enter'); setOtpValue(''); setError(''); }} className="text-[10px] text-gray-400 hover:text-black uppercase flex items-center gap-1">
-                  <ArrowLeft size={10} /> Change Number
+                <button type="button" onClick={() => { setResetStep('confirm'); setOtpValue(''); setError(''); }} className="text-[10px] text-gray-400 hover:text-black uppercase flex items-center gap-1">
+                  <ArrowLeft size={10} /> Back
                 </button>
               </div>
               <div className="relative">
@@ -752,7 +859,7 @@ export default function RoleLoginPage({
                   autoFocus
                 />
               </div>
-              <p className="text-[10px] text-gray-400">Code sent to +{phoneValue}</p>
+              <p className="text-[10px] text-gray-400">Code sent to •••••••• {resetMaskedLast4}</p>
 
               <div className="relative">
                 <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />

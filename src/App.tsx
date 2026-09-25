@@ -95,6 +95,7 @@ import ProtectedProductionRoute from "./components/production/ProtectedProductio
 import ProductionLayout from "./components/production/ProductionLayout";
 import ProductionHomePage from "./pages/production/ProductionHomePage";
 import StaffManagementPage from "./pages/production/StaffManagementPage";
+import UserProfilePage from "./pages/production/UserProfilePage";
 import KarigarListPage from "./pages/production/KarigarListPage";
 import KarigarCreatePage from "./pages/production/KarigarCreatePage";
 // Phase 2 — Design → Sample Design → Sample Piece → Production Request
@@ -165,6 +166,8 @@ function ProductionRoutes() {
       >
         <Route index element={<ProductionHomePage />} />
         <Route path="staff" element={<StaffManagementPage />} />
+        <Route path="profile" element={<UserProfilePage />} />
+        <Route path="profile/:uid" element={<UserProfilePage />} />
         <Route path="karigars" element={<KarigarListPage />} />
         <Route path="karigars/new" element={<KarigarCreatePage />} />
         {/* Phase 2 — Design chain */}
@@ -226,6 +229,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Loom is a data-dense internal tool with its own independently
+    // scrolling sidebar/content regions — cinematic window-level smooth
+    // scroll fights those nested panels and never gets reset on route
+    // change (that reset only happens in the B2C-only Layout.tsx), which is
+    // the root cause of the reported vertical/nested/sidebar scroll bugs.
+    if (isLoomHost) return;
+
     if ("scrollRestoration" in history) {
       history.scrollRestoration = "manual";
     }
