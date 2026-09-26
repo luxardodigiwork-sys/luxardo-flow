@@ -137,3 +137,28 @@ export function hasAnyRole(identity: StaffIdentity, roles: string[]): boolean {
   if (r === "super_admin" && roles.includes("admin")) return true;
   return false;
 }
+
+/**
+ * True when a resolved staff/{uid} role/active pair is eligible for the
+ * privileged Mobile Number + Password login method (Owner/Admin/Super Admin
+ * ONLY, and active). Mirrors the same privileged tier already accepted by
+ * ADMIN_STAFF_ROLES in functions/src/production.ts requireAdmin() and by
+ * isEligiblePrivilegedStaffDoc in src/utils/loomIdentity.ts (client mirror
+ * below) — kept as its own pure, dependency-free helper so it can be
+ * unit-tested without a Firestore/Auth call. Never grants anything a
+ * non-mobile privileged login method wouldn't already grant.
+ *
+ * STRICT active check (locked requirement): ONLY the literal boolean
+ * `true` is accepted. false, undefined, null, a missing field, "true"
+ * (string), and 1 (number) are ALL rejected — no coercion. This is
+ * intentionally stricter than the `!== false` convention used elsewhere in
+ * this codebase (requireAdmin, requireStaff, isEligiblePrivilegedStaffDoc,
+ * isEligibleForMobileRecovery, isEligibleLoomIdentity) — this specific
+ * method's locked spec requires a positive, exact match, not merely "not
+ * explicitly deactivated".
+ */
+export function isPrivilegedMobileLoginEligible(role: unknown, active: unknown): boolean {
+  if (active !== true) return false;
+  const r = String(role ?? "").toLowerCase().trim();
+  return r === "owner" || r === "admin" || r === "super_admin";
+}

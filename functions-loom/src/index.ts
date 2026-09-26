@@ -23,11 +23,17 @@ export {
   nextId,
   staffCreate,
   staffUpdate,
+  staffChangePassword,
   staffBackfillCustomerDocs,
   karigarCreate,
   karigarUpdate,
 } from "../../functions/src/production";
 export { userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "../../functions/src/production";
+
+/* P0-2 — Privileged (Owner/Admin/Super Admin) Mobile Number + Password
+ * login. FLOW-only: deliberately never exported from functions/src/index.ts
+ * (the B2C-deployed bundle). */
+export { privilegedMobilePasswordLogin } from "../../functions/src/privilegedAuth";
 
 /* Phase 2 · Block 2.1 — Catalogue Design management + version preservation */
 export {

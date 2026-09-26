@@ -26,6 +26,43 @@ export const CANONICAL_STAFF_ROLES = [
 export type CanonicalStaffRole = (typeof CANONICAL_STAFF_ROLES)[number];
 
 /**
+ * The 8 OPERATIONAL roles that sign in via the common LUXARDO FLOW staff
+ * page ("/login") — i.e. CANONICAL_STAFF_ROLES minus "owner" and "admin".
+ * "owner", "admin" and the (non-canonical) "super_admin" identity instead
+ * share the ONE privileged page ("/admin/login") — see
+ * PRIVILEGED_LOGIN_ROLES / isEligibleForPrivilegedLoginPage below.
+ */
+export const OPERATIONAL_STAFF_ROLES = [
+  "designer",
+  "pm",
+  "dispatch",
+  "guard",
+  "tailor",
+  "store",
+  "accounts",
+  "analysis",
+] as const;
+
+export type OperationalStaffRole = (typeof OPERATIONAL_STAFF_ROLES)[number];
+
+export function isOperationalStaffRole(role: unknown): boolean {
+  const r = String(role ?? "").toLowerCase().trim();
+  return (OPERATIONAL_STAFF_ROLES as readonly string[]).includes(r);
+}
+
+/**
+ * The 3 roles that share the ONE privileged login page ("/admin/login"):
+ * Super Admin, Admin, Owner. Exactly complementary to OPERATIONAL_STAFF_ROLES
+ * within {CANONICAL_STAFF_ROLES ∪ "super_admin"}.
+ */
+export const PRIVILEGED_LOGIN_ROLES = ["super_admin", "admin", "owner"] as const;
+
+export function isEligibleForPrivilegedLoginPage(role: unknown): boolean {
+  const r = String(role ?? "").toLowerCase().trim();
+  return (PRIVILEGED_LOGIN_ROLES as readonly string[]).includes(r);
+}
+
+/**
  * Canonical form of a role string, or null when it is not a recognised
  * canonical staff role. Legacy / typo roles (e.g. "grade") return null and
  * therefore fail closed — they are repaired only by the server-side
@@ -130,13 +167,16 @@ export function isStaffRoleOrSuperAdmin(role: unknown): boolean {
 }
 
 /**
- * Shared fail-closed eligibility check for the LUXARDO FLOW common login page
- * AND the mobile-OTP password-reset flow: an identity is only usable there
- * when it is an ACTIVE canonical staff/{uid} role (Owner included — Owner is
- * not excluded from this, per the User/Owner/Staff model) and NOT one of the
- * two privileged Gmail identities (those use the dedicated /admin/login page
- * and its own real Firebase password reset, never this mechanism).
- * `active` may be omitted when the caller has already filtered for it.
+ * Shared fail-closed eligibility check for the LUXARDO FLOW COMMON login page
+ * ("/login") ONLY (not the mobile-OTP password-reset flow — see
+ * isEligibleForMobileRecovery below, which deliberately stays broader, and
+ * not the privileged page — see isEligibleForPrivilegedLoginPage above).
+ *
+ * An identity may use the common page when it is an ACTIVE OPERATIONAL staff
+ * role (one of the 8 in OPERATIONAL_STAFF_ROLES) — Super Admin, Admin and
+ * Owner are excluded here regardless of email: they all share the ONE
+ * privileged page ("/admin/login") instead. `active` may be omitted when the
+ * caller has already filtered for it.
  */
 export function isEligibleLoomIdentity(
   email: unknown,
@@ -145,7 +185,36 @@ export function isEligibleLoomIdentity(
 ): boolean {
   if (isPrivilegedEmail(email)) return false;
   if (active === false) return false;
-  return isCanonicalStaffRole(role);
+  return isOperationalStaffRole(role);
+}
+
+/**
+ * True when a privileged Gmail identity (Super Admin or Admin, as resolved
+ * by privilegedRoleForEmail) may ACTUALLY resolve to that role — i.e. the
+ * email alone is never sufficient; there must also be a matching, active
+ * staff/{uid} doc. Super Admin's doc may still carry the pre-migration
+ * "owner" role (see scripts/loom-seed-privileged-staff.cjs) — accepted for
+ * that identity only. Admin requires its own exact role; it is never
+ * accepted merely because the doc is some other admin-tier role. Used by
+ * AuthContext.tsx (client identity resolution) so a privileged email with no
+ * doc, a deactivated doc, or a mismatched role fails closed to null — the
+ * same as any other unrecognised account, never trusted by email alone.
+ */
+export function isEligiblePrivilegedStaffDoc(
+  privRole: "super_admin" | "admin",
+  docRole: unknown,
+  active: unknown,
+): boolean {
+  if (active === false) return false;
+  // "super_admin" is deliberately not in CANONICAL_STAFF_ROLES (it's never
+  // assignable via staffCreate/staffUpdate), so it needs its own check
+  // alongside normalizeStaffRole for the ordinary canonical values.
+  const r = String(docRole ?? "").toLowerCase().trim();
+  const canonical = normalizeStaffRole(r);
+  const effective = canonical ?? (r === "super_admin" ? "super_admin" : null);
+  if (!effective) return false;
+  const acceptedDocRoles = privRole === "super_admin" ? ["super_admin", "owner"] : ["admin"];
+  return acceptedDocRoles.includes(effective);
 }
 
 /**
@@ -169,4 +238,28 @@ export function isEligibleForMobileRecovery(role: unknown, active?: unknown): bo
   if (active === false) return false;
   const r = String(role ?? "").toLowerCase().trim();
   return r === "super_admin" || isCanonicalStaffRole(r);
+}
+
+/**
+ * True when a resolved staff/{uid} role/active pair is eligible for the
+ * privileged Mobile Number + Password login method (Owner/Admin/Super Admin
+ * ONLY, and active) — the client-side mirror of the identical server-side
+ * helper in functions/src/staffAuth.ts (isPrivilegedMobileLoginEligible),
+ * kept in sync the same way every other eligibility pair in this file is.
+ * Does not change which page a role signs in on (isEligibleForPrivilegedLoginPage
+ * above is unrelated and unaffected) — only whether this specific login
+ * METHOD accepts the resolved identity.
+ *
+ * STRICT active check (locked requirement): ONLY the literal boolean
+ * `true` is accepted. false, undefined, null, a missing field, "true"
+ * (string), and 1 (number) are ALL rejected — no coercion. Intentionally
+ * stricter than the `!== false` convention used by every other eligibility
+ * helper in this file (isEligibleLoomIdentity, isEligiblePrivilegedStaffDoc,
+ * isEligibleForMobileRecovery) — this method's locked spec requires a
+ * positive, exact match, not merely "not explicitly deactivated".
+ */
+export function isPrivilegedMobileLoginEligible(role: unknown, active?: unknown): boolean {
+  if (active !== true) return false;
+  const r = String(role ?? "").toLowerCase().trim();
+  return r === "owner" || r === "admin" || r === "super_admin";
 }

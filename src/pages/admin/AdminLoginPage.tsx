@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Lock, Mail, KeyRound, Eye, EyeOff, ShieldAlert, ArrowRight, Clock } from 'lucide-react';
+import { Lock, Mail, KeyRound, Eye, EyeOff, ShieldAlert, ArrowRight, Clock, Phone } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import {
   signInWithEmailAndPassword,
@@ -8,10 +8,14 @@ import {
   signOut,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithCustomToken,
 } from 'firebase/auth';
-import { auth, db } from '../../firebase';
+import { auth, db, functions } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { normalizeStaffRole, isCanonicalStaffRole, isLoomHost, isPrivilegedEmail, privilegedRoleForEmail } from '../../utils/loomIdentity';
+import { httpsCallable } from 'firebase/functions';
+import { normalizeStaffRole, isCanonicalStaffRole, isLoomHost, isEligibleForPrivilegedLoginPage } from '../../utils/loomIdentity';
+import PhoneInput from 'react-phone-input-2';
+import 'react-phone-input-2/lib/style.css';
 
 const MAX_FAILED_ATTEMPTS = 3;
 const LOCKOUT_DURATION_MINUTES = 15;
@@ -19,7 +23,7 @@ const LOCKOUT_DURATION_MINUTES = 15;
 export default function AdminLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, isAuthReady } = useAuth();
+  const { user, isAuthReady, waitForResolution } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'reset'>('login');
   const [email, setEmail] = useState('');
@@ -31,18 +35,30 @@ export default function AdminLoginPage() {
   const [isLocked, setIsLocked] = useState(false);
   const [lockTimer, setLockTimer] = useState<number>(0);
 
+  // ── P0-2: Mobile Number + Password (privileged tier only) ───────────────
+  // A third, parallel credential-based login method alongside Email+Password
+  // and Google — NOT an OTP flow. See functions/src/privilegedAuth.ts.
+  const [authTab, setAuthTab] = useState<'password' | 'mobile'>('password');
+  const [mobilePhone, setMobilePhone] = useState('');
+  const [mobilePassword, setMobilePassword] = useState('');
+  const [mobileShowPwd, setMobileShowPwd] = useState(false);
+
   const fromPath = (location.state as any)?.from?.pathname as string | undefined;
   const from = fromPath || '/admin/dashboard';
 
   useEffect(() => {
     if (isAuthReady && user) {
       if (isLoomHost()) {
-        // LUXARDO FLOW: this page authenticates the two privileged Gmail
-        // identities — Super Admin and Admin.
-        if (privilegedRoleForEmail(user.email) || ['admin', 'super_admin'].includes(user.role)) {
+        // LUXARDO FLOW: this page authenticates the ONE privileged group —
+        // Owner, Admin AND Super Admin all share it — and, like every other
+        // identity, requires the resolved role to actually be one of the
+        // three, resolved through an active staff/{uid} doc rather than
+        // merely a recognised email (see AuthContext.tsx).
+        if (isEligibleForPrivilegedLoginPage(user.role)) {
           navigate(fromPath || '/production', { replace: true });
         } else if (isCanonicalStaffRole(user.staffRole)) {
-          // An ordinary staff member landed here — send them to the common page.
+          // An ordinary operational staff member landed here — send them to
+          // the common page.
           navigate('/login', { replace: true });
         }
       } else if (['admin', 'super_admin'].includes(user.role)) {
@@ -82,17 +98,32 @@ export default function AdminLoginPage() {
     }
   };
 
-  // Returns 'admin' for admin/super_admin, or 'staff' for any other canonical
-  // Loom staff role (only accepted on the Loom host, which has no /backend).
+  // Returns 'admin' for the privileged group (Owner/Admin/Super Admin), or
+  // 'staff' for any other canonical Loom staff role (only accepted on the
+  // Loom host, which has no /backend).
   const verifyAdminRole = async (uid: string): Promise<'admin' | 'staff'> => {
-    // ── LUXARDO FLOW: this page authenticates the two PRIVILEGED Gmail
-    // identities — Super Admin and Admin. Recognised by identifier, not by a
-    // role doc, so this works with zero dependency on staff/{uid}. Ordinary
-    // staff use the common LUXARDO FLOW staff login page.
+    // ── LUXARDO FLOW: this is the ONE privileged page — Owner, Admin and
+    // Super Admin all sign in here. Resolved via the SAME race-safe
+    // waitForResolution() channel every other Loom page uses — never a
+    // second, independent staff/{uid} read — and requires the resolved role
+    // to actually be one of the three: the Gmail identifier alone (for
+    // Admin/Super Admin) is never sufficient (AuthContext itself now also
+    // requires a matching active staff/{uid} doc before resolving it at
+    // all), and Owner resolves through its own staff/{uid} doc the same way
+    // any operational role does.
     if (isLoomHost()) {
-      if (isPrivilegedEmail(auth.currentUser?.email)) return 'admin';
+      let resolvedUser;
+      try {
+        resolvedUser = await waitForResolution(uid);
+      } catch {
+        resolvedUser = null;
+      }
+      if (resolvedUser && isEligibleForPrivilegedLoginPage(resolvedUser.role)) return 'admin';
       await signOut(auth);
-      throw new Error('This sign-in is for Super Admin / Admin only. Staff members use the LUXARDO FLOW staff login page.');
+      if (resolvedUser && isCanonicalStaffRole(resolvedUser.staffRole)) {
+        throw new Error('This sign-in is for Owner, Admin and Super Admin only. Staff members use the LUXARDO FLOW staff login page.');
+      }
+      throw new Error('Account record not found. Sign in again or contact support.');
     }
 
     // Primary source of truth is customers/{uid} (shared AuthContext).
@@ -213,6 +244,45 @@ export default function AdminLoginPage() {
     }
   };
 
+  // ── P0-2: Mobile Number + Password ───────────────────────────────────────
+  // Server (privilegedMobilePasswordLogin) resolves phone -> uid, checks
+  // staff/{uid} is an ACTIVE Owner/Admin/Super Admin, verifies the password
+  // via Identity Toolkit, then returns a Firebase custom token for that SAME
+  // uid — signInWithCustomToken() below establishes an ordinary Firebase
+  // Auth session, so verifyAdminRole() and every downstream check run
+  // completely unchanged, exactly as after Email+Password or Google.
+  const handleMobilePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setOkMsg('');
+    setLoading(true);
+    try {
+      if (checkLocalLock()) {
+        setLoading(false);
+        return;
+      }
+
+      const loginFn = httpsCallable(functions, 'privilegedMobilePasswordLogin');
+      const result = await loginFn({ phoneNumber: '+' + mobilePhone, password: mobilePassword });
+      const { token } = result.data as { token: string };
+
+      const cred = await signInWithCustomToken(auth, token);
+      const kind = await verifyAdminRole(cred.user.uid);
+
+      localStorage.removeItem('admin_attempts');
+      localStorage.removeItem('admin_lock');
+      navigate(isLoomHost() ? '/production' : (kind === 'admin' ? from : (fromPath || '/production')), { replace: true });
+    } catch (err: any) {
+      // The server already returns one fixed, generic message for every
+      // failure reason (unknown number, wrong tier, inactive, wrong
+      // password, rate-limited) — never distinguish further here.
+      recordLocalFailure();
+      setError(err?.message || 'Invalid mobile number or password.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -267,7 +337,7 @@ export default function AdminLoginPage() {
             {mode === 'login' ? 'Sign In' : 'Reset Password'}
           </h2>
           <p className="text-[10px] tracking-widest uppercase text-gray-400 text-center mb-6">
-            {isLoomHost() ? 'Super Admin & Admin only' : 'Admin personnel only'}
+            {isLoomHost() ? 'Owner, Admin & Super Admin' : 'Admin personnel only'}
           </p>
 
           {error && (
@@ -296,28 +366,77 @@ export default function AdminLoginPage() {
                 <div className="flex-1 h-px bg-gray-200"></div>
               </div>
 
-              <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
-                <input type="text" style={{ display: 'none' }} />
-                <input type="password" style={{ display: 'none' }} />
-
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Admin email" className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="nope" />
-                </div>
-                <div className="relative">
-                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                  <input type={showPwd ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full border border-gray-300 rounded-lg pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="new-password" />
-                  <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
-                    {showPwd ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-                <button type="submit" disabled={loading || isLocked} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50">
-                  {loading ? 'Verifying...' : 'Sign In'} <ArrowRight size={14} />
+              <div className="flex mb-6 border border-gray-200 rounded-lg p-1 bg-gray-50">
+                <button
+                  type="button"
+                  onClick={() => { setAuthTab('password'); setError(''); }}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${authTab === 'password' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                >
+                  Email &amp; Password
                 </button>
-                <div className="text-center pt-1">
-                  <button type="button" onClick={() => setMode('reset')} className="text-xs text-gray-500 hover:text-black tracking-wider">Forgot password?</button>
-                </div>
-              </form>
+                <button
+                  type="button"
+                  onClick={() => { setAuthTab('mobile'); setError(''); }}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${authTab === 'mobile' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                >
+                  Mobile Number
+                </button>
+              </div>
+
+              {authTab === 'password' && (
+                <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
+                  <input type="text" style={{ display: 'none' }} />
+                  <input type="password" style={{ display: 'none' }} />
+
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Admin email" className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="nope" />
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input type={showPwd ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full border border-gray-300 rounded-lg pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="new-password" />
+                    <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
+                      {showPwd ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <button type="submit" disabled={loading || isLocked} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50">
+                    {loading ? 'Verifying...' : 'Sign In'} <ArrowRight size={14} />
+                  </button>
+                  <div className="text-center pt-1">
+                    <button type="button" onClick={() => setMode('reset')} className="text-xs text-gray-500 hover:text-black tracking-wider">Forgot password?</button>
+                  </div>
+                </form>
+              )}
+
+              {authTab === 'mobile' && (
+                <form onSubmit={handleMobilePasswordLogin} className="space-y-4" autoComplete="off">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 mb-2 block">Mobile Number</label>
+                    <PhoneInput
+                      country={'in'}
+                      value={mobilePhone}
+                      onChange={(phone) => setMobilePhone(phone)}
+                      enableSearch
+                      disableSearchIcon
+                      inputProps={{ name: 'phone', required: true }}
+                      containerClass="!w-full font-sans"
+                      inputClass="!w-full !h-[46px] !pl-14 !bg-white !border !border-gray-300 focus:!border-black transition-colors !rounded-lg !text-sm"
+                      buttonClass="!bg-white !border-0 !border-r !border-gray-300 !rounded-l-lg hover:!bg-gray-50"
+                      dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm !max-h-56 !overflow-y-auto"
+                    />
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input type={mobileShowPwd ? 'text' : 'password'} value={mobilePassword} onChange={(e) => setMobilePassword(e.target.value)} placeholder="Password" className="w-full border border-gray-300 rounded-lg pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="new-password" />
+                    <button type="button" onClick={() => setMobileShowPwd(!mobileShowPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
+                      {mobileShowPwd ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <button type="submit" disabled={loading || isLocked} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50">
+                    {loading ? 'Verifying...' : 'Sign In'} <Phone size={14} />
+                  </button>
+                </form>
+              )}
             </>
           )}
 
