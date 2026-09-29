@@ -12,15 +12,12 @@ import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
   ConfirmationResult,
-  updatePassword,
 } from 'firebase/auth';
 import { auth, db, functions } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { normalizeStaffRole, isCanonicalStaffRole, isPrivilegedEmail, isEligibleLoomIdentity, isEligibleForMobileRecovery } from '../../utils/loomIdentity';
 import { isValidE164, toE164 } from '../../utils/phone';
-import PhoneInput from 'react-phone-input-2';
-import 'react-phone-input-2/lib/style.css';
 
 const MAX_FAILED_ATTEMPTS = 3;
 const LOCKOUT_DURATION_MINUTES = 15;
@@ -78,8 +75,6 @@ export default function RoleLoginPage({
   // SAME staff/{uid} Firestore-role-gated identity once an admin has set a
   // matching phoneNumber on that staff member's Auth record (staffCreate /
   // staffUpdate) — no separate backend/lookup mechanism is introduced.
-  const [loginTab, setLoginTab] = useState<'password' | 'phone'>('password');
-  const [phoneLoginStep, setPhoneLoginStep] = useState<'enter' | 'otp'>('enter');
   // Mobile-OTP password recovery (common/LUXARDO FLOW only) — the phone
   // number is NEVER something the requester types. 'identify': enter the
   // account email. 'confirm': show only the masked last-4 digits of the
@@ -95,7 +90,6 @@ export default function RoleLoginPage({
   // into signInWithPhoneNumber() and never stored in any React state or
   // rendered anywhere.
   const resetRecoveryTokenRef = useRef<string | null>(null);
-  const [phoneValue, setPhoneValue] = useState('');
   const [otpValue, setOtpValue] = useState('');
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [confirmPasswordValue, setConfirmPasswordValue] = useState('');
@@ -104,7 +98,9 @@ export default function RoleLoginPage({
   const recaptchaContainerId = useRef(`rcv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`).current;
 
   const from = (location.state as any)?.from?.pathname || redirectPath;
-  // Common staff page always lands on /production; role decides what renders.
+  // Common staff page always lands on /production; role decides what
+  // renders there. Only the B2C per-role pages use their own configured
+  // redirectPath.
   const successTarget = common
     ? ((location.state as any)?.from?.pathname || '/production')
     : from;
@@ -112,9 +108,9 @@ export default function RoleLoginPage({
   useEffect(() => {
     if (isAuthReady && user) {
       const alreadyAllowed = common
-        // Common page = ordinary staff only. Super Admin and Admin both have
-        // the dedicated privileged page.
-        ? (isCanonicalStaffRole(user.staffRole) && !isPrivilegedEmail(user.email))
+        // Common page = ordinary staff only. Super Admin, Admin and Owner
+        // all share the one privileged page (/admin/login) instead.
+        ? isEligibleLoomIdentity(user.email, user.staffRole)
         : allowedRoles.includes(user.role);
       if (alreadyAllowed) navigate(successTarget, { replace: true });
     }
@@ -189,8 +185,8 @@ export default function RoleLoginPage({
   }, [common]);
 
   const resetPhoneFlowState = () => {
-    setPhoneValue(''); setOtpValue(''); setNewPasswordValue(''); setConfirmPasswordValue('');
-    setConfirmationResult(null); setPhoneLoginStep('enter'); setError(''); setOkMsg('');
+    setOtpValue(''); setNewPasswordValue(''); setConfirmPasswordValue('');
+    setConfirmationResult(null); setError(''); setOkMsg('');
     // STEP 9 — invalidate all temporary recovery state, including the
     // never-displayed authoritative number, on completion/cancel/back-nav.
     setResetStep('identify'); setResetEmailValue(''); setResetMaskedLast4(null);
@@ -199,9 +195,10 @@ export default function RoleLoginPage({
 
   const verifyRole = async (uid: string) => {
     // ── Common LUXARDO FLOW staff login ──────────────────────────────
-    // Ordinary staff only. Super Admin and Admin are turned away — they use
-    // the dedicated privileged page. That check is a plain string compare
-    // (no Firestore round-trip), so it's done immediately and can't race.
+    // Ordinary OPERATIONAL staff only. Super Admin, Admin and Owner are
+    // turned away — they all share the ONE privileged page (/admin/login).
+    // That check is a plain string compare (no Firestore round-trip), so
+    // it's done immediately and can't race.
     //
     // The actual staff/{uid} identity check is NOT re-read here. It is read
     // exactly once, by AuthContext's onAuthStateChanged listener — the single
@@ -223,6 +220,10 @@ export default function RoleLoginPage({
       } catch {
         // waitForResolution's own timeout — treated as "no identity" below.
         resolvedUser = null;
+      }
+      if (resolvedUser?.staffRole === 'owner' || resolvedUser?.staffRole === 'admin') {
+        await signOut(auth);
+        throw new Error(`${resolvedUser.staffRole === 'owner' ? 'Owner' : 'Admin'}: please sign in on the dedicated admin page.`);
       }
       const eligible = !!resolvedUser && isEligibleLoomIdentity(resolvedUser.email, resolvedUser.staffRole);
       const staffRole = eligible ? resolvedUser!.staffRole : undefined;
@@ -334,64 +335,6 @@ export default function RoleLoginPage({
     } catch (err: any) {
       recordLocalFailure();
       setError(err?.code ? errMsg(err.code) : (err?.message || 'Google sign-in failed.'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ── Mobile-number sign-in (common/LUXARDO FLOW only) ────────────────────
-  const handleSendLoginOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(''); setOkMsg('');
-    if (!phoneValue || phoneValue.length < 8) {
-      setError('Please enter a valid mobile number with country code.');
-      return;
-    }
-    setLoading(true);
-    try {
-      if (checkLocalLock()) { setLoading(false); return; }
-      if (!recaptchaVerifierRef.current) {
-        initRecaptcha();
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      if (!recaptchaVerifierRef.current) throw new Error('Could not initialize security check. Please refresh the page.');
-      const confirmation = await signInWithPhoneNumber(auth, '+' + phoneValue, recaptchaVerifierRef.current);
-      setConfirmationResult(confirmation);
-      setPhoneLoginStep('otp');
-    } catch (err: any) {
-      if (recaptchaVerifierRef.current) {
-        try { recaptchaVerifierRef.current.clear(); } catch {}
-        recaptchaVerifierRef.current = null;
-      }
-      initRecaptcha();
-      if (err.code === 'auth/too-many-requests') setError('Too many attempts. Please wait a few minutes and try again.');
-      else if (err.code === 'auth/invalid-phone-number') setError('Invalid mobile number. Please include your country code.');
-      else setError(err.message || 'Failed to send OTP. Please check your connection.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifyLoginOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    if (!otpValue || otpValue.length !== 6) {
-      setError('Please enter the 6-digit verification code.');
-      return;
-    }
-    setLoading(true);
-    try {
-      if (!confirmationResult) throw new Error('Session lost. Please request a new code.');
-      const cred = await confirmationResult.confirm(otpValue);
-      await verifyRole(cred.user.uid);
-      localStorage.removeItem(attemptsKey);
-      localStorage.removeItem(lockKey);
-      navigate(successTarget, { replace: true });
-    } catch (err: any) {
-      recordLocalFailure();
-      if (err.code === 'auth/invalid-verification-code') setError('Incorrect code. Please double-check and try again.');
-      else if (err.code === 'auth/code-expired') setError('Code expired. Please request a new one.');
-      else setError(err?.message || 'Verification failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -513,7 +456,14 @@ export default function RoleLoginPage({
         throw new Error('This mobile number is not registered for this User.');
       }
 
-      await updatePassword(cred.user, newPasswordValue);
+      // Routed through the server callable (Admin SDK) rather than the
+      // client SDK's updatePassword() so recovery ALSO clears
+      // staff/{uid}.mustChangePassword in the same operation — a client
+      // write to staff/{uid} would be denied by firestore.loom.rules anyway,
+      // and this keeps "password changed" audited the same way regardless
+      // of which flow performed it.
+      const changeFn = httpsCallable(functions, 'staffChangePassword');
+      await changeFn({ newPassword: newPasswordValue });
       await signOut(auth);
       resetPhoneFlowState();
       setMode('login');
@@ -638,27 +588,7 @@ export default function RoleLoginPage({
                 </>
               )}
 
-              {common && (
-                <div className="flex mb-6 border border-gray-200 rounded-lg p-1 bg-gray-50">
-                  <button
-                    type="button"
-                    onClick={() => { setLoginTab('password'); setError(''); }}
-                    className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${loginTab === 'password' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
-                  >
-                    Email &amp; Password
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setLoginTab('phone'); setError(''); }}
-                    className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${loginTab === 'phone' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
-                  >
-                    Mobile Number
-                  </button>
-                </div>
-              )}
-
-              {(!common || loginTab === 'password') && (
-                <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
+              <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
                   <input type="text" style={{ display: 'none' }} />
                   <input type="password" style={{ display: 'none' }} />
 
@@ -710,65 +640,6 @@ export default function RoleLoginPage({
                     )}
                   </div>
                 </form>
-              )}
-
-              {common && loginTab === 'phone' && phoneLoginStep === 'enter' && (
-                <form onSubmit={handleSendLoginOtp} className="space-y-4">
-                  <div>
-                    <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 mb-2 block">Mobile Number</label>
-                    <PhoneInput
-                      country={'in'}
-                      value={phoneValue}
-                      onChange={(phone) => setPhoneValue(phone)}
-                      enableSearch
-                      disableSearchIcon
-                      inputProps={{ name: 'phone', required: true }}
-                      containerClass="!w-full font-sans"
-                      inputClass="!w-full !h-[46px] !pl-14 !bg-white !border !border-gray-300 focus:!border-black transition-colors !rounded-lg !text-sm"
-                      buttonClass="!bg-white !border-0 !border-r !border-gray-300 !rounded-l-lg hover:!bg-gray-50"
-                      dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm !max-h-56 !overflow-y-auto"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={loading || isLocked}
-                    className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50"
-                  >
-                    {loading ? 'Sending...' : 'Send OTP'} <Phone size={14} />
-                  </button>
-                </form>
-              )}
-
-              {common && loginTab === 'phone' && phoneLoginStep === 'otp' && (
-                <form onSubmit={handleVerifyLoginOtp} className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Verification Code</label>
-                    <button type="button" onClick={() => { setPhoneLoginStep('enter'); setOtpValue(''); setError(''); }} className="text-[10px] text-gray-400 hover:text-black uppercase flex items-center gap-1">
-                      <ArrowLeft size={10} /> Change Number
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={otpValue}
-                      onChange={(e) => setOtpValue(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                      placeholder="• • • • • •"
-                      className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-lg tracking-[0.4em] focus:outline-none focus:border-black"
-                      autoFocus
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-400">Code sent to +{phoneValue}</p>
-                  <button
-                    type="submit"
-                    disabled={loading || isLocked || otpValue.length !== 6}
-                    className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50"
-                  >
-                    {loading ? 'Verifying...' : 'Verify & Sign In'} <ArrowRight size={14} />
-                  </button>
-                </form>
-              )}
             </>
           )}
 

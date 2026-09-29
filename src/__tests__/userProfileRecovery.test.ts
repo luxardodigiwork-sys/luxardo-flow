@@ -52,7 +52,7 @@
  *   npx tsx src/__tests__/userProfileRecovery.test.ts
  */
 import { isValidE164, toE164, maskPhoneLast4 } from '../utils/phone';
-import { isEligibleLoomIdentity, SUPER_ADMIN_EMAIL, ADMIN_EMAIL } from '../utils/loomIdentity';
+import { isEligibleLoomIdentity, isEligibleForMobileRecovery, SUPER_ADMIN_EMAIL, ADMIN_EMAIL } from '../utils/loomIdentity';
 
 let pass = true;
 const fail = (msg: string) => { console.error(`FAIL: ${msg}`); pass = false; };
@@ -81,32 +81,47 @@ check('toE164 adds a leading "+" (PhoneInput output shape)', toE164('91987654321
 check('toE164 leaves an already-prefixed number unchanged', toE164('+919876543210'), '+919876543210');
 
 // ── A/B/F/K. Eligibility for the identify step — same gate the server
-// mirrors in mobileResetLookup's { eligible, reason } response ────────────
+// mirrors in mobileResetLookup's { eligible, reason } response.
+//
+// UPDATED for the LUXARDO FLOW authentication correction: this section
+// tests RECOVERY eligibility specifically, which is isEligibleForMobileRecovery
+// (mobileResetLookup's actual mirror) — NOT isEligibleLoomIdentity, which is
+// LOGIN-page routing only and, as of this change, also excludes "owner"
+// (Owner now has its own dedicated /owner/login page; see
+// loomPrivilegedAuth.test.ts). Recovery eligibility for Owner is UNCHANGED —
+// it still uses the mobile-OTP mechanism as a fallback even though it no
+// longer logs in via the common page. ─────────────────────────────────────
 // A: valid profile with a registered mobile + active role -> eligible
 for (const role of ['owner', 'designer', 'pm', 'dispatch', 'guard', 'tailor', 'store', 'accounts', 'analysis']) {
   check(`A: active "${role}" with a resolvable identity is eligible (registered-mobile case)`,
-    isEligibleLoomIdentity('user@luxardofashion.com', role, true), true);
+    isEligibleForMobileRecovery(role, true), true);
 }
 // F: inactive User -> denied ("This User account is inactive...")
-check('F: inactive User is denied even with an otherwise-valid role', isEligibleLoomIdentity('user@luxardofashion.com', 'pm', false), false);
+check('F: inactive User is denied even with an otherwise-valid role', isEligibleForMobileRecovery('pm', false), false);
 // B: missing profile (no staff doc resolved at all) -> denied ("not registered")
-check('B: no resolvable identity (role undefined) is denied', isEligibleLoomIdentity('user@luxardofashion.com', undefined), false);
-check('B: no resolvable identity (role null) is denied', isEligibleLoomIdentity('user@luxardofashion.com', null), false);
+check('B: no resolvable identity (role undefined) is denied', isEligibleForMobileRecovery(undefined), false);
+check('B: no resolvable identity (role null) is denied', isEligibleForMobileRecovery(null), false);
 // Legacy/unrecognised role fails closed, never guessed
-check('unrecognised legacy role "grade" is denied (fails closed, no guessing)', isEligibleLoomIdentity('user@luxardofashion.com', 'grade'), false);
+check('unrecognised legacy role "grade" is denied (fails closed, no guessing)', isEligibleForMobileRecovery('grade'), false);
 
 // K: normal operational User recovery works identically to any other role
-check('K: normal operational role (dispatch) recovery-eligible', isEligibleLoomIdentity('dispatch@luxardofashion.com', 'dispatch', true), true);
+check('K: normal operational role (dispatch) recovery-eligible', isEligibleForMobileRecovery('dispatch', true), true);
 
 // Owner recovery (item 8 / test K's Owner counterpart) — Owner is NOT
 // excluded from this mechanism, unlike the two truly privileged identities.
 check('Owner is recovery-eligible (not conflated with the 2 privileged Gmail identities)',
-  isEligibleLoomIdentity('owner@luxardofashion.com', 'owner', true), true);
+  isEligibleForMobileRecovery('owner', true), true);
 
-// Privileged Super Admin/Admin are excluded — they use real Firebase
-// email-based reset on the dedicated /admin/login page instead.
-check(`${SUPER_ADMIN_EMAIL} is denied even with a role attached`, isEligibleLoomIdentity(SUPER_ADMIN_EMAIL, 'owner', true), false);
-check(`${ADMIN_EMAIL} is denied even with a role attached`, isEligibleLoomIdentity(ADMIN_EMAIL, 'admin', true), false);
+// Privileged Super Admin/Admin are excluded from RECOVERY too (own real
+// Firebase email-based reset instead) — isEligibleForMobileRecovery takes a
+// role only (no email param); the exclusion for these two is enforced by
+// resolveRecoveryEligibility never resolving a *role* for them server-side,
+// covered directly in mobileReset.tokenExchange.test.ts. This section keeps
+// its original LOGIN-page assertions (isEligibleLoomIdentity) below, since
+// that really is what they test — Super Admin/Admin never reach the common
+// /login page at all, dedicated pages only.
+check(`${SUPER_ADMIN_EMAIL} is denied on the common LOGIN page even with a role attached`, isEligibleLoomIdentity(SUPER_ADMIN_EMAIL, 'owner', true), false);
+check(`${ADMIN_EMAIL} is denied on the common LOGIN page even with a role attached`, isEligibleLoomIdentity(ADMIN_EMAIL, 'admin', true), false);
 
 // ── N. Existing email/password login path is unaffected ─────────────────
 // verifyRole's common branch uses this SAME isEligibleLoomIdentity gate
@@ -121,9 +136,10 @@ if (!pass) {
 } else {
   console.log(
     'USER PROFILE / RECOVERY REGRESSION TEST: PASS — masking never reveals more than the ' +
-    'last 4 digits, E.164 validation matches the server exactly, and the shared ' +
-    'eligibility gate correctly admits every active canonical role (Owner included) ' +
-    'while denying missing/inactive/unrecognised/privileged identities — the same ' +
-    'gate both the login path and the new identify-by-email recovery step depend on.'
+    'last 4 digits, E.164 validation matches the server exactly, the recovery-eligibility ' +
+    'gate (isEligibleForMobileRecovery) correctly admits every active canonical role ' +
+    '(Owner included) while denying missing/inactive/unrecognised identities, and the ' +
+    'separate common-login gate (isEligibleLoomIdentity) still denies the two privileged ' +
+    'Gmail identities exactly as before.'
   );
 }

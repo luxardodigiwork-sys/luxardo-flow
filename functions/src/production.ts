@@ -332,6 +332,11 @@ export async function provisionStaffAccount(params: {
     role,
     active: true,
     phoneNumber: phoneNumber || null,
+    // New accounts always start in a mandatory-password-change state,
+    // whether the caller supplied an explicit temp password or a random one
+    // was generated above — the assigning admin is never the account's
+    // permanent password. Cleared by staffChangePassword on first success.
+    mustChangePassword: true,
     createdAt: now,
     updatedAt: now,
     createdBy: createdByUid,
@@ -446,7 +451,7 @@ export const staffUpdate = onCall(async (request) => {
   const allowed = [
     "displayName", "email", "role", "active", "phoneNumber",
     "department", "profilePhotoUrl", "ratePerDay", "workingHours",
-    "joiningDate", "employeeId", "notes",
+    "joiningDate", "employeeId", "notes", "mustChangePassword",
   ];
   const patch: Record<string, unknown> = {};
   for (const k of allowed) {
@@ -461,6 +466,9 @@ export const staffUpdate = onCall(async (request) => {
       throw new HttpsError("invalid-argument", `Invalid role: ${patch.role}`);
     }
     patch.role = canonicalRole;
+  }
+  if (patch.mustChangePassword !== undefined && typeof patch.mustChangePassword !== "boolean") {
+    throw new HttpsError("invalid-argument", "mustChangePassword must be a boolean.");
   }
   validateProfilePatch(patch);
 
@@ -511,6 +519,55 @@ export const staffUpdate = onCall(async (request) => {
       { displayName: before.displayName, email: before.email, active: before.active },
       { displayName: patch.displayName ?? before.displayName, email: patch.email ?? before.email, active: patch.active ?? before.active });
   }
+
+  return { ok: true };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffChangePassword — self-service password change, used for BOTH the
+ * voluntary "change my password" case and the MANDATORY first-login change
+ * (staff/{uid}.mustChangePassword === true, set by provisionStaffAccount on
+ * every new account and by the default-password migration script).
+ *
+ * Deliberately does the Auth password update AND the mustChangePassword
+ * clear in one server-side, Admin-SDK operation — there is no way to clear
+ * the flag without the Auth password having actually changed (unlike a
+ * plain Firestore field write, which firestore.loom.rules would deny to a
+ * client anyway).
+ *
+ * Any ACTIVE staff/{uid} identity may call this for their OWN uid — same
+ * requireStaff() gate as everywhere else (fails closed if deactivated / no
+ * doc), no admin role required. Does not touch any other field.
+ *
+ * Input : { newPassword: string }
+ * Output: { ok: true }
+ * ═══════════════════════════════════════════════════════════════════ */
+export const staffChangePassword = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const uid = request.auth.uid;
+  const actor = await requireStaff(uid); // fails closed if no active staff/{uid}/customers/{uid} identity
+
+  const { newPassword } = request.data as { newPassword?: string };
+  if (!newPassword || typeof newPassword !== "string" || newPassword.length < 8) {
+    throw new HttpsError("invalid-argument", "New password must be at least 8 characters.");
+  }
+
+  try {
+    await admin.auth().updateUser(uid, { password: newPassword });
+  } catch (err: any) {
+    throw new HttpsError("invalid-argument", err?.message || "Could not update password.");
+  }
+
+  const now = new Date().toISOString();
+  const ref = db.doc(`staff/${uid}`);
+  const snap = await ref.get();
+  const hadFlag = snap.exists && !!snap.data()?.mustChangePassword;
+  if (snap.exists) {
+    await ref.set({ mustChangePassword: false, updatedAt: now }, { merge: true });
+  }
+
+  await writeAudit("STAFF_PASSWORD_CHANGED", "staff", uid, uid, actor.name, actor.role,
+    { mustChangePassword: hadFlag }, { mustChangePassword: false });
 
   return { ok: true };
 });

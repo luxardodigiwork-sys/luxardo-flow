@@ -1,19 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { db, functions } from '../../firebase';
 import { collection, getDocs, doc, updateDoc, query, orderBy } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { Users, Plus, Search, ShieldCheck, XCircle, Loader2, CheckCircle, X, Phone, UserRound } from 'lucide-react';
+import { Users, Plus, Search, ShieldCheck, XCircle, Loader2, CheckCircle, X, Phone, UserRound, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { StaffDoc } from '../../types/production';
 import { PRODUCTION_CONFIG } from '../../constants/businessConfig';
-import { roleLabel } from '../../utils/rolePermissions';
+import { can, roleLabel } from '../../utils/rolePermissions';
+import { useAuth } from '../../context/AuthContext';
 import { useScrollLock } from '../../utils/useScrollLock';
 import { isValidE164 } from '../../utils/phone';
 
 type StaffRole = StaffDoc['role'];
 
 export default function StaffManagementPage() {
+  // Server-side authorization is already mandatory (firestore.loom.rules'
+  // staff/{uid} read rule + staffCreate/staffUpdate's requireAdmin) — this is
+  // the matching CLIENT-side gate so an ordinary staff member who navigates
+  // here directly sees a clear redirect instead of a broken admin UI whose
+  // Firestore list query would fail silently and whose actions would all be
+  // rejected server-side anyway.
+  const { user } = useAuth();
+  const effectiveRole = (user?.staffRole || user?.role || '') as any;
+  const isAuthorized = can(effectiveRole, 'production.staff');
+
   const [staff, setStaff] = useState<StaffDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -39,7 +50,12 @@ export default function StaffManagementPage() {
   useScrollLock(!!mobileTarget);
 
   const loadStaff = useCallback(async () => {
+    if (!isAuthorized) { setLoading(false); return; }
     try {
+      // No role filter — every LUXARDO FLOW identity (Super Admin, Admin,
+      // Owner, and all 8 operational roles) has a staff/{uid} doc, and this
+      // query intentionally fetches all of them. Owner must never disappear
+      // from this list.
       const q = query(collection(db, 'staff'), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
       setStaff(snap.docs.map(d => d.data() as StaffDoc));
@@ -48,9 +64,16 @@ export default function StaffManagementPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAuthorized]);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
+
+  // Server-side authorization (firestore.loom.rules + requireAdmin) is the
+  // real boundary; this is only the matching client-side redirect so an
+  // ordinary staff member never sees the admin UI at all.
+  if (!isAuthorized) {
+    return <Navigate to="/production" replace />;
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,6 +212,7 @@ export default function StaffManagementPage() {
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Mobile</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Role</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Status</th>
+                  <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Password</th>
                   <th className="text-right text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Actions</th>
                 </tr>
               </thead>
@@ -217,6 +241,15 @@ export default function StaffManagementPage() {
                       }`}>
                         {s.active ? <><CheckCircle size={12} /> Active</> : <><XCircle size={12} /> Inactive</>}
                       </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {s.mustChangePassword ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 text-amber-600 text-[10px] font-bold uppercase tracking-widest rounded-md" title="Still using a temporary password — will be forced to change it on next login.">
+                          <KeyRound size={12} /> Must Change
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400 uppercase tracking-widest">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right whitespace-nowrap">
                       <Link

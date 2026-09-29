@@ -37,12 +37,17 @@ const check = (label: string, actual: unknown, expected: unknown) => {
 
 // ── isEligibleLoomIdentity: the fail-closed reset/login gate ──────────────
 
-// 1) User with a valid mobile number → eligible (OTP reset must succeed for
-//    every canonical role, Owner included per the User/Owner/Staff model).
-for (const role of ['owner', 'designer', 'pm', 'dispatch', 'guard', 'tailor', 'store', 'accounts', 'analysis']) {
+// 1) User with a valid mobile number → eligible (every OPERATIONAL canonical
+//    role — Owner moved to the dedicated Owner/Super-Admin page per the
+//    LUXARDO FLOW authentication correction; see loomPrivilegedAuth.test.ts).
+for (const role of ['designer', 'pm', 'dispatch', 'guard', 'tailor', 'store', 'accounts', 'analysis']) {
   check(`active canonical role "${role}" is eligible`, isEligibleLoomIdentity('someone@luxardofashion.com', role, true), true);
   check(`active canonical role "${role}" (active omitted) is eligible`, isEligibleLoomIdentity('someone@luxardofashion.com', role), true);
 }
+// 1b) Owner is now excluded from this common page — dedicated /owner/login
+//     instead (still eligible for mobile-OTP RECOVERY though — unaffected,
+//     see isEligibleForMobileRecovery in loomPrivilegedAuth.test.ts).
+check('"owner" is now denied on the common login page (moved to /owner/login)', isEligibleLoomIdentity('owner@luxardofashion.com', 'owner', true), false);
 
 // 2) Missing identity → safe, clear denial (no staff/{uid} doc at all —
 //    the caller passes role=undefined/data=null in this case).
@@ -54,10 +59,10 @@ check('unrecognised role string "grade" is denied', isEligibleLoomIdentity('some
 check('empty role string is denied', isEligibleLoomIdentity('someone@luxardofashion.com', ''), false);
 
 // 4) Deactivated account is denied even with an otherwise-valid role.
-check('active === false is denied even for a valid role', isEligibleLoomIdentity('someone@luxardofashion.com', 'owner', false), false);
+check('active === false is denied even for a valid role', isEligibleLoomIdentity('someone@luxardofashion.com', 'pm', false), false);
 
 // 5) Privileged Gmail identities never go through this staff-only mechanism
-//    — they have their own real Firebase password reset on /admin/login.
+//    — they have their own dedicated Owner/Super-Admin or Admin page.
 check(`${SUPER_ADMIN_EMAIL} is denied even with a role attached`, isEligibleLoomIdentity(SUPER_ADMIN_EMAIL, 'owner', true), false);
 check(`${ADMIN_EMAIL} is denied even with a role attached`, isEligibleLoomIdentity(ADMIN_EMAIL, 'admin', true), false);
 
@@ -89,9 +94,10 @@ if (!pass) {
   process.exitCode = 1;
 } else {
   console.log(
-    'MOBILE RESET REGRESSION TEST: PASS — every canonical role (Owner included) with a ' +
-    'valid, active identity is reset-eligible; a missing/invalid/inactive/privileged ' +
-    'identity is denied with no distinguishing signal; E.164 validation matches the ' +
-    "server's regex exactly."
+    'MOBILE RESET REGRESSION TEST: PASS — every operational canonical role with a ' +
+    'valid, active identity is common-login-eligible; Owner is correctly excluded ' +
+    '(moved to /owner/login) while remaining separately recovery-eligible; a missing/' +
+    'invalid/inactive/privileged identity is denied with no distinguishing signal; ' +
+    "E.164 validation matches the server's regex exactly."
   );
 }

@@ -179,7 +179,7 @@ export const razorpayWebhook = onRequest(
 export { sendOrderEmail } from "./emailSender";
 
 // V1 Production System — master-data CRUD + atomic ID generation
-export { nextId, staffCreate, staffUpdate, karigarCreate, karigarUpdate, userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "./production";
+export { nextId, staffCreate, staffUpdate, staffChangePassword, karigarCreate, karigarUpdate, userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "./production";
 
 // Phase 2 · Block 2.1 — Catalogue Design management + version preservation
 export {

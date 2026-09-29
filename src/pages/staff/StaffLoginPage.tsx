@@ -3,12 +3,17 @@ import RoleLoginPage from '../../components/auth/RoleLoginPage';
 /**
  * The ONE common LUXARDO FLOW staff login page.
  *
- * Every non-Super-Admin role signs in here (owner, admin, designer, pm,
- * dispatch, guard, tailor, store, accounts, analysis). Identity + role are
- * resolved from staff/{uid} — the canonical, server-enforced source — and the
- * user is routed to /production, where the role decides what renders.
+ * Every operational staff role signs in here: designer, pm, dispatch, guard,
+ * tailor, store, accounts, analysis. Identity + role are resolved from
+ * staff/{uid} — the canonical, server-enforced source — and the user is
+ * routed to /production, where the role decides what renders.
  *
- * Super Admin does NOT use this page; it has a dedicated route (/admin/login).
+ * Owner, Admin and Super Admin do NOT use this page — Owner/Super Admin share
+ * a dedicated route (/owner/login) and Admin has its own (/admin/login); both
+ * offer Google Sign-In. (allowedRoles below is not actually consulted in
+ * `common` mode — see RoleLoginPage's isEligibleLoomIdentity-based check —
+ * kept here only as accurate documentation of who lands on /production from
+ * this page.)
  */
 export default function StaffLoginPage() {
   return (
@@ -16,7 +21,7 @@ export default function StaffLoginPage() {
       common
       roleLabel="USER"
       allowedRoles={[
-        'owner', 'admin', 'designer', 'pm', 'dispatch',
+        'designer', 'pm', 'dispatch',
         'guard', 'tailor', 'store', 'accounts', 'analysis',
       ]}
       redirectPath="/production"

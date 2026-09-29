@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { normalizeStaffRole, isLoomHost, privilegedRoleForEmail } from '../utils/loomIdentity';
+import { normalizeStaffRole, isLoomHost, privilegedRoleForEmail, isEligiblePrivilegedStaffDoc } from '../utils/loomIdentity';
 import { ResolutionChannel } from '../utils/resolutionChannel';
 
 const MASTER_ADMIN_EMAIL = 'luxardodigiwork@gmail.com';
@@ -16,6 +16,9 @@ export interface User {
   email?: string;
   role: string;
   staffRole?: string | null; // V1 production role (designer/pm/guard/tailor/store) from staff/{uid} doc
+  /** LUXARDO FLOW only — true until this User completes the mandatory
+   *  first-login password change. Mirrors staff/{uid}.mustChangePassword. */
+  mustChangePassword?: boolean;
   isPrimeMember: boolean;
   permissions?: Record<string, boolean>;
   country?: string;
@@ -58,6 +61,13 @@ interface AuthContextType {
    * that uid completes; rejects if it doesn't complete within `timeoutMs`.
    */
   waitForResolution: (uid: string, timeoutMs?: number) => Promise<User | null>;
+  /**
+   * LUXARDO FLOW (Loom) only — optimistically patch the resolved Loom user in
+   * place (e.g. mustChangePassword: false right after a successful password
+   * change) without waiting for a full onAuthStateChanged re-resolution. Does
+   * nothing outside the Loom host / when no user is resolved.
+   */
+  updateLoomUser: (patch: Partial<User>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -91,38 +101,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             let loomUser: User | null = null;
 
             const privRole = privilegedRoleForEmail(firebaseUser.email);
-            if (privRole) {
-              // Super Admin / Admin: recognised by identifier (a real Gmail
-              // mailbox), never by a role doc — so Google Sign-In and
-              // email/password both resolve with no Firestore dependency.
-              loomUser = {
-                id: firebaseUser.uid,
-                name: firebaseUser.displayName || (privRole === 'super_admin' ? 'Super Admin' : 'Admin'),
-                email: firebaseUser.email || '',
-                role: privRole,
-                staffRole: privRole,
-                isPrimeMember: false,
-              };
-            } else {
-              try {
-                const staffDoc = await getDoc(doc(db, 'staff', firebaseUser.uid));
-                if (staffDoc.exists()) {
-                  const s = staffDoc.data();
-                  const role = normalizeStaffRole(s.role); // null → fail closed
-                  if (role && s.active !== false) {
-                    loomUser = {
-                      id: firebaseUser.uid,
-                      name: s.displayName || s.name || firebaseUser.displayName || 'Staff',
-                      email: s.email || firebaseUser.email || '',
-                      role,          // customers-style role mirrors the staff role
-                      staffRole: role,
-                      isPrimeMember: false,
-                    };
-                  }
+            try {
+              const staffDoc = await getDoc(doc(db, 'staff', firebaseUser.uid));
+              const s = staffDoc.exists() ? staffDoc.data() : null;
+
+              if (privRole) {
+                // Super Admin / Admin: the Gmail identifier tells us WHICH
+                // privileged identity is signing in, but it is NOT sufficient
+                // on its own — this must still resolve through an ACTIVE
+                // staff/{uid} doc carrying a matching admin-tier role, exactly
+                // like every other identity. A privileged email with no doc
+                // (or a deactivated/mismatched one) fails closed to null, the
+                // same as an unrecognised account — it is never trusted by
+                // email alone. (Real authorization was always staff/{uid}-only
+                // server-side via requireStaff(); this brings the CLIENT's
+                // resolution in line with that, instead of it trusting email.)
+                if (isEligiblePrivilegedStaffDoc(privRole, s?.role, s?.active)) {
+                  loomUser = {
+                    id: firebaseUser.uid,
+                    name: s.displayName || s.name || firebaseUser.displayName || (privRole === 'super_admin' ? 'Super Admin' : 'Admin'),
+                    email: s.email || firebaseUser.email || '',
+                    role: privRole,
+                    staffRole: privRole,
+                    isPrimeMember: false,
+                    mustChangePassword: !!s.mustChangePassword,
+                  };
                 }
-              } catch (e) {
-                console.error('[LUXARDO FLOW] staff/{uid} read failed:', e);
+              } else if (s) {
+                const role = normalizeStaffRole(s.role); // null → fail closed
+                if (role && s.active !== false) {
+                  loomUser = {
+                    id: firebaseUser.uid,
+                    name: s.displayName || s.name || firebaseUser.displayName || 'Staff',
+                    email: s.email || firebaseUser.email || '',
+                    role,          // customers-style role mirrors the staff role
+                    staffRole: role,
+                    isPrimeMember: false,
+                    mustChangePassword: !!s.mustChangePassword,
+                  };
+                }
               }
+            } catch (e) {
+              console.error('[LUXARDO FLOW] staff/{uid} read failed:', e);
             }
 
             if (loomUser) {
@@ -290,6 +310,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('LUXARDO FASHION_logged_out');
   };
 
+  const updateLoomUser = (patch: Partial<User>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...patch };
+      try { localStorage.setItem(LOOM_USER_KEY, JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+  };
+
   const logout = async () => {
     try { if (auth.currentUser) await signOut(auth); } catch (err) {}
     try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (err) {}
@@ -354,7 +383,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider value={{
       user, isLoggedIn: !!user, isAuthReady, logout, login,
       updateUserPreferences, loginAdmin, resetPassword, upgradeToPrime,
-      waitForResolution,
+      waitForResolution, updateLoomUser,
     }}>
       {children}
     </AuthContext.Provider>

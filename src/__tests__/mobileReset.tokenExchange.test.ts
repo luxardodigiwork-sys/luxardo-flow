@@ -95,10 +95,13 @@ check('isEligibleLoomIdentity still denies Admin (login routing unchanged — de
 check('isEligibleForMobileRecovery admits Super Admin (recovery)', isEligibleForMobileRecovery('super_admin', true), true);
 check('isEligibleLoomIdentity still denies Super Admin (login routing unchanged)',
   isEligibleLoomIdentity(SUPER_ADMIN_EMAIL, 'super_admin', true), false);
-// Owner: eligible under BOTH gates (never was excluded from either).
+// Owner: still eligible for mobile-OTP RECOVERY (unchanged), but — per the
+// LUXARDO FLOW authentication correction — now excluded from the common
+// LOGIN gate too, same as Super Admin/Admin: Owner moved to the dedicated
+// Owner/Super-Admin page (/owner/login). See loomPrivilegedAuth.test.ts.
 check('isEligibleForMobileRecovery admits Owner', isEligibleForMobileRecovery('owner', true), true);
-check('isEligibleLoomIdentity admits Owner (owner is not a privileged email)',
-  isEligibleLoomIdentity('owner@luxardofashion.com', 'owner', true), true);
+check('isEligibleLoomIdentity now denies Owner (moved to /owner/login)',
+  isEligibleLoomIdentity('owner@luxardofashion.com', 'owner', true), false);
 
 if (!pass) {
   console.error('MOBILE RESET TOKEN-EXCHANGE / PRIVILEGED-RECOVERY REGRESSION TEST: FAIL');

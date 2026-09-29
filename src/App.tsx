@@ -272,12 +272,13 @@ export default function App() {
     return (
       <AuthProvider>
         <Routes>
-          {/* Super Admin — dedicated, stronger boundary */}
+          {/* Owner / Super Admin / Admin — the ONE privileged entry point.
+              Google Sign-In + email/password, resolved via staff/{uid}. */}
           <Route path="/admin/login" element={<AdminLoginPage />} />
-          {/* The ONE common staff login for every non-Super-Admin role */}
+          {/* The ONE common staff login for every operational role */}
           <Route path="/login" element={<StaffLoginPage />} />
-          {/* Legacy per-role login paths all funnel into the common page */}
-          <Route path="/owner/login" element={<Navigate to="/login" replace />} />
+          {/* Legacy per-role login paths all funnel into one of the two pages above */}
+          <Route path="/owner/login" element={<Navigate to="/admin/login" replace />} />
           <Route path="/dispatch/login" element={<Navigate to="/login" replace />} />
           <Route path="/accounts/login" element={<Navigate to="/login" replace />} />
           <Route path="/analysis/login" element={<Navigate to="/login" replace />} />

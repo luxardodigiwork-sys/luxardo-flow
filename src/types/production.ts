@@ -626,6 +626,13 @@ export interface StaffDoc {
   email: string;
   role: StaffRole;
   active: boolean;
+  /** True until the User completes a mandatory first-login password change
+   *  (set on creation, and by the default-password migration script). Set
+   *  server-side ONLY, by provisionStaffAccount (create) and by
+   *  staffChangePassword (cleared on success) / staffUpdate (admin can set
+   *  it back true after manually resetting someone's password). Never
+   *  writable via userProfileSelfUpdate. */
+  mustChangePassword?: boolean;
   /** Display mirror of the Firebase Auth record's phone number (E.164). The
    *  Auth record is the actual phone-sign-in credential AND the sole
    *  authoritative source for mobile-OTP password recovery; this field is
@@ -711,6 +718,7 @@ export type AuditAction =
   | "STAFF_CREATE"
   | "STAFF_UPDATE"
   | "STAFF_ROLE_CHANGE"
+  | "STAFF_PASSWORD_CHANGED" // self-service (mandatory first-login change, or voluntary) via staffChangePassword
   | "STAFF_PROVISION_ORPHAN" // Auth user created but its staff/customers write AND the compensating delete both failed — needs manual review.
   | "REPORT_EXPORT";
 

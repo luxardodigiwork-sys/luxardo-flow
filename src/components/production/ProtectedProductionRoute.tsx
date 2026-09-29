@@ -3,6 +3,7 @@ import { Navigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Loader2 } from 'lucide-react';
 import { isStaffRoleOrSuperAdmin, isLoomHost } from '../../utils/loomIdentity';
+import ChangePasswordPage from '../../pages/production/ChangePasswordPage';
 
 /**
  * Production route guard.
@@ -13,10 +14,17 @@ import { isStaffRoleOrSuperAdmin, isLoomHost } from '../../utils/loomIdentity';
  *   Super Admin):
  *     - Loom  → /login
  *     - B2C   → /backend      (unchanged)
+ * - Authenticated, valid identity, but staff/{uid}.mustChangePassword is
+ *   still true (new account / default-password migration): renders the
+ *   mandatory Change Password screen INSTEAD OF children, for every
+ *   /production/* route — there is no route a User can navigate to that
+ *   escapes this, since every one of them mounts through this same guard.
+ *   This is a server-truth field (staff/{uid}), never trusted from
+ *   localStorage/sessionStorage alone.
  *
- * Does NOT check specific roles — per-page role checks are done inside each page
- * using can() from rolePermissions, and every write is re-checked server-side
- * by firestore.loom.rules + the Cloud Functions.
+ * Beyond that, does NOT check specific roles — per-page role checks are done
+ * inside each page using can() from rolePermissions, and every write is
+ * re-checked server-side by firestore.loom.rules + the Cloud Functions.
  */
 export default function ProtectedProductionRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthReady } = useAuth();
@@ -41,6 +49,10 @@ export default function ProtectedProductionRoute({ children }: { children: React
   // Super Admin (staffRole === 'super_admin') is allowed through.
   if (!isStaffRoleOrSuperAdmin(user.staffRole)) {
     return <Navigate to={loom ? '/login' : '/backend'} replace />;
+  }
+
+  if (user.mustChangePassword) {
+    return <ChangePasswordPage />;
   }
 
   return <>{children}</>;
