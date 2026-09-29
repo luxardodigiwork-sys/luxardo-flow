@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Lock, Mail, KeyRound, Eye, EyeOff, ShieldAlert, ArrowRight, Clock, ArrowLeft, Phone } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import FlowLogo from '../FlowLogo';
 import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -561,12 +562,18 @@ export default function RoleLoginPage({
         )}
 
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-black rounded-full mb-4 shadow-md">
-            <Lock size={20} className="text-white" />
-          </div>
-          <h1 className="font-display text-2xl text-black tracking-[0.3em] uppercase">
-            {common ? 'LUXARDO FLOW' : 'LUXARDO'}
-          </h1>
+          {common ? (
+            <FlowLogo size="lg" className="mx-auto mb-4" />
+          ) : (
+            <>
+              <div className="inline-flex items-center justify-center w-14 h-14 bg-black rounded-full mb-4 shadow-md">
+                <Lock size={20} className="text-white" />
+              </div>
+              <h1 className="font-display text-2xl text-black tracking-[0.3em] uppercase">
+                LUXARDO
+              </h1>
+            </>
+          )}
           <p className="text-[10px] tracking-[0.4em] text-gray-500 mt-1">
             {common ? 'SIGN IN' : `${roleLabel} ACCESS`}
           </p>

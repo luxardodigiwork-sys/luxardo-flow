@@ -9,6 +9,7 @@ import { can } from '../../utils/rolePermissions';
 import { isLoomHost } from '../../utils/loomIdentity';
 import { useScrollLock } from '../../utils/useScrollLock';
 import { AnimatePresence, motion } from 'framer-motion';
+import FlowLogo from '../FlowLogo';
 
 export default function ProductionLayout() {
   const location = useLocation();
@@ -72,7 +73,7 @@ export default function ProductionLayout() {
       {/* ── Desktop Sidebar ── */}
       <aside className="w-64 bg-white border-r border-gray-200 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20">
         <div className="p-8 border-b border-gray-100 flex flex-col justify-center min-h-[100px] shrink-0">
-          <h1 className="font-display text-xl tracking-[0.2em] uppercase text-black">LUXARDO</h1>
+          <FlowLogo size="md" />
           <p className="text-[10px] text-gray-400 uppercase tracking-widest mt-2 font-bold">Loom · Production</p>
         </div>
 
@@ -149,7 +150,7 @@ export default function ProductionLayout() {
             >
               <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white shrink-0">
                 <div>
-                  <h1 className="font-display text-lg tracking-[0.2em] uppercase text-black">LUXARDO</h1>
+                  <FlowLogo size="sm" />
                   <p className="text-[9px] text-gray-400 uppercase tracking-widest mt-1 font-bold">Loom · Production</p>
                 </div>
                 <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-50 rounded-lg transition-colors">

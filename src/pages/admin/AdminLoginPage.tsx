@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, Mail, KeyRound, Eye, EyeOff, ShieldAlert, ArrowRight, Clock, Phone } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import FlowLogo from '../../components/FlowLogo';
 import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -303,12 +304,18 @@ export default function AdminLoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-black rounded-full mb-4 shadow-md">
-            <Lock size={20} className="text-white" />
-          </div>
-          <h1 className="font-display text-2xl text-black tracking-[0.3em] uppercase">
-            {isLoomHost() ? 'LUXARDO FLOW' : 'LUXARDO'}
-          </h1>
+          {isLoomHost() ? (
+            <FlowLogo size="lg" className="mx-auto mb-4" />
+          ) : (
+            <>
+              <div className="inline-flex items-center justify-center w-14 h-14 bg-black rounded-full mb-4 shadow-md">
+                <Lock size={20} className="text-white" />
+              </div>
+              <h1 className="font-display text-2xl text-black tracking-[0.3em] uppercase">
+                LUXARDO
+              </h1>
+            </>
+          )}
           <p className="text-[10px] tracking-[0.4em] text-gray-500 mt-1">
             ADMIN ACCESS
           </p>
