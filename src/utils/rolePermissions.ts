@@ -156,7 +156,7 @@ const MATRIX: Record<Module, Role[]> = {
   // gate exactly (Tailor-only, ownership-checked server-side too) — mirrors
   // the qc.perform precedent above.
   'production.tailor.startComplete': ['tailor'],
-  'production.store':                ['super_admin','admin','owner','designer','pm','dispatch'],
+  'production.store':                ['super_admin','admin','owner','designer','pm','dispatch','store'],
   // Strict, matching storeOutCreate/storeOutReportIssue's backend gate.
   'production.store.out':            ['store'],
   'production.store.out.issue':      ['store'],

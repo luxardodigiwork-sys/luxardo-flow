@@ -1,7 +1,8 @@
 /* eslint-disable */
 /**
  * FOCUSED REGRESSION TEST — PM view-access fix for Guard QC / Tailor / Store
- * workspaces, per the Final V1 Role Matrix (rolePermissions.ts MATRIX).
+ * workspaces, PLUS the store-role regression fix, per the Final V1 Role
+ * Matrix (rolePermissions.ts MATRIX).
  *
  * Confirms:
  *  1. pm now has READ/VIEW access to the 3 modules the matrix always listed
@@ -16,6 +17,12 @@
  *     view or action access to either, exactly as before this fix.
  *  4. The roles that DO perform each action are unaffected (guard/tailor/
  *     store/dispatch still work exactly as before).
+ *  5. REGRESSION FIX: the actual 'store' role — omitted from the original
+ *     production.store VIEW list, which locked it out of its own
+ *     StoreWorkspacePage once the page gate switched from
+ *     store.out/store.out.issue to the broader view permission — now has
+ *     production.store view access too, alongside pm, with zero change to
+ *     its own store.out/store.out.issue action permissions.
  *
  * can()/MATRIX are pure, dependency-free functions — runs directly via tsx,
  * same convention as rolePermissions.med5.test.ts.
@@ -64,6 +71,22 @@ check('store still allowed "production.store.out.issue" (unaffected)', can("stor
 check('dispatch still allowed "production.dispatch.assignTailor" (unaffected)', can("dispatch", "production.dispatch.assignTailor" as any), true);
 check('dispatch still allowed "production.tailorRequests" (view, unaffected)', can("dispatch", "production.tailorRequests" as any), true);
 check('owner still allowed "production.tailorRequests.review" (unaffected)', can("owner", "production.tailorRequests.review" as any), true);
+
+// ── 5. REGRESSION FIX: store role can now view its own workspace ──────────
+check('store can now VIEW "production.store" (regression fix)', can("store", "production.store" as any), true);
+check('pm can still VIEW "production.store" (unaffected by the fix)', can("pm", "production.store" as any), true);
+check('store can perform "production.store.out" (unaffected by the fix)', can("store", "production.store.out" as any), true);
+check('store can perform "production.store.out.issue" (unaffected by the fix)', can("store", "production.store.out.issue" as any), true);
+check('pm still denied "production.store.out" (view != perform)', can("pm", "production.store.out" as any), false);
+check('pm still denied "production.store.out.issue" (view != perform)', can("pm", "production.store.out.issue" as any), false);
+// Negative checks — the fix must be surgical: no OTHER role gained
+// production.store view access as a side effect.
+check('guard still denied "production.store" (no accidental grant)', can("guard", "production.store" as any), false);
+check('tailor still denied "production.store" (no accidental grant)', can("tailor", "production.store" as any), false);
+check('accounts still denied "production.store" (no accidental grant)', can("accounts", "production.store" as any), false);
+check('analysis still denied "production.store" (no accidental grant)', can("analysis", "production.store" as any), false);
+check('designer still allowed "production.store" (pre-existing, unaffected)', can("designer", "production.store" as any), true);
+check('dispatch still allowed "production.store" (pre-existing, unaffected)', can("dispatch", "production.store" as any), true);
 
 if (!pass) {
   console.error("PM VIEW-ACCESS FIX REGRESSION TEST: FAIL");
