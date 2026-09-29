@@ -9,6 +9,12 @@ import { can } from '../../utils/rolePermissions';
 export default function TailorWorkspacePage() {
   const { user } = useAuth();
   const effectiveRole = (user?.staffRole || '') as any;
+  // 'production.tailor' = read-only view of the Tailor pipeline (includes
+  // pm, per the Final V1 Role Matrix); 'production.tailor.startComplete' =
+  // actually starting/completing stitching, strictly tailor-only (matches
+  // tailorStartStitching/tailorCompleteStitching's server gate) — kept
+  // separate so a viewer can never see an action the server would reject.
+  const canView = can(effectiveRole, 'production.tailor');
   const canWork = can(effectiveRole, 'production.tailor.startComplete');
 
   const [pieces, setPieces] = useState<any[]>([]);
@@ -23,11 +29,17 @@ export default function TailorWorkspacePage() {
     setLoading(true);
     setError(null);
     try {
-      const [assignedSnap, stitchingSnap] = await Promise.all([
-        getDocs(query(collection(db, 'pieces'), where('assignedTailorUid', '==', user.id), where('stage', '==', 'TAILOR_ASSIGNED'))),
-        getDocs(query(collection(db, 'pieces'), where('assignedTailorUid', '==', user.id), where('stage', '==', 'STITCHING'))),
-      ]);
-      const data = [...assignedSnap.docs, ...stitchingSnap.docs].map((d) => d.data());
+      // An actual Tailor sees only pieces assigned to them (their own
+      // worklist). A view-only visitor (e.g. pm) has no assignedTailorUid
+      // pieces at all, so instead show the whole Tailor-stage pipeline —
+      // 'pieces' read access is already role-gated (not per-document) in
+      // firestore.loom.rules, so this is not a wider grant than intended.
+      const data = canWork
+        ? (await Promise.all([
+            getDocs(query(collection(db, 'pieces'), where('assignedTailorUid', '==', user.id), where('stage', '==', 'TAILOR_ASSIGNED'))),
+            getDocs(query(collection(db, 'pieces'), where('assignedTailorUid', '==', user.id), where('stage', '==', 'STITCHING'))),
+          ])).flatMap((snap) => snap.docs).map((d) => d.data())
+        : (await getDocs(query(collection(db, 'pieces'), where('stage', 'in', ['TAILOR_ASSIGNED', 'STITCHING'])))).docs.map((d) => d.data());
       data.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
       setPieces(data);
     } catch (err: any) {
@@ -36,7 +48,7 @@ export default function TailorWorkspacePage() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, canWork]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -73,7 +85,7 @@ export default function TailorWorkspacePage() {
     }
   };
 
-  if (!canWork) {
+  if (!canView) {
     return (
       <div className="text-center py-20">
         <p className="text-sm text-gray-500">You do not have permission to access the Tailor workspace.</p>
@@ -91,7 +103,7 @@ export default function TailorWorkspacePage() {
           <div>
             <h1 className="text-2xl font-display text-black tracking-wide">Tailor Workspace</h1>
             <p className="text-xs text-gray-500 font-sans mt-1">
-              {pieces.length} piece{pieces.length === 1 ? '' : 's'} assigned to you{loading && ' · loading…'}
+              {pieces.length} piece{pieces.length === 1 ? '' : 's'} {canWork ? 'assigned to you' : 'in the Tailor pipeline'}{loading && ' · loading…'}
             </p>
           </div>
         </div>
@@ -108,7 +120,7 @@ export default function TailorWorkspacePage() {
       ) : pieces.length === 0 ? (
         <div className="text-center py-24">
           <Scissors size={32} className="mx-auto text-gray-300 mb-3" />
-          <p className="text-sm text-gray-500">No pieces are currently assigned to you.</p>
+          <p className="text-sm text-gray-500">{canWork ? 'No pieces are currently assigned to you.' : 'No pieces are currently in the Tailor pipeline.'}</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -120,7 +132,7 @@ export default function TailorWorkspacePage() {
                   {piece.stage}
                 </span>
               </div>
-              {piece.stage === 'TAILOR_ASSIGNED' && (
+              {canWork && piece.stage === 'TAILOR_ASSIGNED' && (
                 <button
                   disabled={busyId === piece.id}
                   onClick={() => startStitching(piece.id)}
@@ -129,7 +141,7 @@ export default function TailorWorkspacePage() {
                   Start Stitching
                 </button>
               )}
-              {piece.stage === 'STITCHING' && (
+              {canWork && piece.stage === 'STITCHING' && (
                 <div className="space-y-2">
                   <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500">
                     <Camera size={12} /> Garment Image URL (mandatory)

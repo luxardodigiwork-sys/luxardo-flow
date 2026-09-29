@@ -26,6 +26,11 @@ export default function GuardQcWorkspacePage() {
   const { user } = useAuth();
 
   const effectiveRole = (user?.staffRole || user?.role || '') as any;
+  // 'production.qc' = read-only view of the Guard QC queue (includes pm,
+  // per the Final V1 Role Matrix); 'production.qc.perform' = actually
+  // performing QC, strictly guard-only — never elevated, kept separate so a
+  // viewer can never see an action affordance the server would reject.
+  const canView = can(effectiveRole, 'production.qc');
   const canPerformQc = can(effectiveRole, 'production.qc.perform');
   const canReadKarigars = can(effectiveRole, 'production.karigars');
 
@@ -61,7 +66,7 @@ export default function GuardQcWorkspacePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (!canPerformQc) {
+  if (!canView) {
     return (
       <div className="text-center py-20">
         <p className="text-sm text-gray-500">You do not have permission to access the Guard QC workspace.</p>
@@ -134,7 +139,7 @@ export default function GuardQcWorkspacePage() {
                         onClick={() => navigate(`/production/pieces/${piece.id}`)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-black text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-80 transition-opacity"
                       >
-                        Open for QC
+                        {canPerformQc ? 'Open for QC' : 'View'}
                         <ArrowRight size={12} />
                       </button>
                     </td>
@@ -170,7 +175,7 @@ export default function GuardQcWorkspacePage() {
                   onClick={() => navigate(`/production/pieces/${piece.id}`)}
                   className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-black text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-80 transition-opacity"
                 >
-                  Open for QC
+                  {canPerformQc ? 'Open for QC' : 'View'}
                   <ArrowRight size={12} />
                 </button>
               </div>

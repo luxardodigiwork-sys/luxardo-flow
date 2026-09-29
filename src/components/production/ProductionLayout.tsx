@@ -44,7 +44,7 @@ export default function ProductionLayout() {
         { path: '/production/sample-pieces', label: 'Sample Pieces', icon: Shirt, roles: ['admin','super_admin','owner','designer','pm','dispatch'], show: can(effectiveRole as any, 'production.samplePieces') },
         { path: '/production/requests', label: 'Production Requests', icon: ClipboardList, roles: ['admin','super_admin','owner','pm','dispatch'], show: can(effectiveRole as any, 'production.requests') },
         { path: '/production/pieces', label: 'Pieces', icon: Package, roles: ['admin','super_admin','owner','pm','dispatch','guard','tailor','store'], show: can(effectiveRole as any, 'production.pieces') },
-        { path: '/production/qc', label: 'Guard QC', icon: ShieldCheck, roles: ['admin','super_admin','guard'], show: can(effectiveRole as any, 'production.qc.perform') },
+        { path: '/production/qc', label: 'Guard QC', icon: ShieldCheck, roles: ['admin','super_admin','guard','pm'], show: can(effectiveRole as any, 'production.qc') },
       ],
     },
     // "System" links point into the separate B2C storefront app — never shown
