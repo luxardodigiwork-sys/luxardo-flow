@@ -114,6 +114,14 @@
       ]
     },
     {
+      "collectionGroup": "catalogueDesigns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isFrozen", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "productionRequests",
       "queryScope": "COLLECTION",
       "fields": [
