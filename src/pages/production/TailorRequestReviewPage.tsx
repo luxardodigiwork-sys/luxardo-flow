@@ -38,7 +38,7 @@ export default function TailorRequestReviewPage() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (canReview) load(); }, [load, canReview]);
 
   const approve = async (requestId: string) => {
     setBusyId(requestId);
