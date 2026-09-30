@@ -118,8 +118,8 @@ export default function AdminOrderDetailsPage() {
     
     setIsUpdating(true);
     try {
-      await updateOrderStatusInFirestore(order.id, { isAccountsApproved: approved } as any);
-      setOrder({ ...order, isAccountsApproved: approved } as any);
+      await updateOrderStatusInFirestore(order.id, { isAccountsApproved: approved });
+      setOrder({ ...order, isAccountsApproved: approved });
     } catch (error: any) {
       alert('Failed to update accounts approval: ' + (error?.message || 'Unknown'));
     } finally {

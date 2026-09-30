@@ -120,6 +120,7 @@ export interface Order {
     | "returned"
     | "failed_delivery";
   verificationStatus?: "verified" | "packing_ready" | "dispatch_ready";
+  isAccountsApproved?: boolean;
   paymentStatus?: "pending" | "paid" | "failed" | "refunded" | "confirmed";
   paymentMethod?: "cod" | "prepaid" | "razorpay";
   paymentId?: string;

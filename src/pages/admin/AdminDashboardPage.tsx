@@ -6,6 +6,21 @@ import { useAuth } from '../../context/AuthContext';
 import { useProducts } from '../../context/ProductsContext';
 import { db } from '../../firebase';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { Order } from '../../types';
+
+// Firestore's onSnapshot delivers createdAt/updatedAt as either a Timestamp
+// (has toMillis/toDate) or, for orders written via ordersFirestore.ts, a
+// plain ISO string — this component defensively handles both. Order['status']
+// is reused here since that union is accurate for this field; createdAt/
+// updatedAt are narrowed locally instead of widening the shared Order type
+// (which types createdAt as a plain string elsewhere in the app).
+type FirestoreTimestampLike = { toMillis?: () => number; toDate?: () => Date };
+interface DashboardOrderSnapshot {
+  id: string;
+  status?: Order['status'];
+  createdAt?: FirestoreTimestampLike;
+  updatedAt?: FirestoreTimestampLike;
+}
 
 export default function AdminDashboardPage() {
   const { isAuthReady } = useAuth();
@@ -23,7 +38,7 @@ export default function AdminDashboardPage() {
     // 1. Listen to Orders Collection (Real-time)
     const ordersQuery = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
     const unsubOrders = onSnapshot(ordersQuery, (snapshot) => {
-      const ordersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const ordersData: DashboardOrderSnapshot[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setOrders(ordersData);
       
       // BUG FIX: Sort by "updatedAt" to catch Dispatch team's live status changes
