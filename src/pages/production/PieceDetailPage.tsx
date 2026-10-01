@@ -32,7 +32,10 @@ const STAGE_COLORS: Record<string, string> = {
 const NEXT_STAGES: Record<string, string[]> = {
   OPEN: ['IN_WORK'],
   IN_WORK: ['QC_PENDING'],
-  QC_PENDING: ['QC_PASS', 'REWORK'],
+  // QC_PENDING has no generic forward moves — verdicts (PASS/REWORK/COMPLETE_REJECT)
+  // go exclusively through guardQcPerform (see the "Guard QC" panel below), matching
+  // the backend's NEXT_STAGES in functions/src/pieces.ts.
+  QC_PENDING: [],
   REWORK: ['IN_WORK'],
   QC_PASS: ['DISPATCH_READY'],
   DISPATCH_READY: ['TAILOR_ASSIGNED', 'STORE'],
