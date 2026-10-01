@@ -12,9 +12,23 @@
  * create/update/delete them (firestore.rules deny writes).
  *
  * Finalized semantics:
- *  - PASS            → piece stage QC_PASS, status active.
+ *  - PASS            → piece stage DISPATCH_READY (locked business rule: a
+ *                       Guard PASS verdict is itself the handoff to Dispatch
+ *                       — there is no separate manual "Move to Dispatch
+ *                       Ready" step for PM/Admin/Owner/Dispatch). qcVerdict
+ *                       is still recorded as "PASS" and the guardQCRecords
+ *                       entry is unchanged — only the persisted piece stage
+ *                       differs from the pre-this-change behavior.
  *  - REWORK          → piece stage REWORK, status in_rework, reworkCount++.
  *  - COMPLETE_REJECT → piece stage REJECTED, status closed (permanent).
+ *
+ * Atomicity: the piece update, the guardQCRecords write, the
+ * pieceMovementHistory entry and the auditLogs entry are ALL part of the
+ * same Firestore transaction (recordMovement/writeAudit both accept an
+ * optional `tx` and are passed this function's transaction) — either all
+ * four commit or none do. This removes the previous window where the piece
+ * could already show a new stage while its movement-history/audit record
+ * failed to write separately afterward.
  * ============================================================================
  */
 
@@ -98,7 +112,10 @@ export const guardQcPerform = onCall(async (request) => {
   let action: string;
   let reworkDelta = 0;
   if (verdict === "PASS") {
-    toStage = "QC_PASS"; status = "active"; qcVerdict = "PASS"; action = "QC_PASS"; reworkDelta = 0;
+    // Locked business rule: PASS *is* the handoff to Dispatch — persist
+    // DISPATCH_READY directly rather than resting at an intermediate QC_PASS
+    // stage that would then need a separate manual move.
+    toStage = "DISPATCH_READY"; status = "active"; qcVerdict = "PASS"; action = "QC_PASS"; reworkDelta = 0;
   } else if (verdict === "REWORK") {
     toStage = "REWORK"; status = "in_rework"; qcVerdict = "REWORK"; action = "QC_REWORK"; reworkDelta = 1;
   } else {
@@ -146,32 +163,36 @@ export const guardQcPerform = onCall(async (request) => {
       createdAt: now,
       updatedAt: now,
     });
-  });
 
-  await recordMovement({
-    pieceId,
-    fromStage: "QC_PENDING",
-    toStage,
-    direction: "FORWARD",
-    action,
-    actor,
-    reason: verdict === "PASS" ? null : reasonText,
-    relatedRequestId: d.prId || null,
-    snapshot: {
-      pieceStage: toStage,
-      totalLabourMinutes: d.totalLabourMinutes || 0,
-      totalLabourCost: d.totalLabourCost || 0,
-    },
+    // Folded into the SAME transaction as the writes above (both accept an
+    // optional tx) — piece state, QC record, movement history and audit log
+    // all commit atomically, or none do. See module header.
+    await recordMovement({
+      pieceId,
+      fromStage: "QC_PENDING",
+      toStage,
+      direction: "FORWARD",
+      action,
+      actor,
+      reason: verdict === "PASS" ? null : reasonText,
+      relatedRequestId: cur.prId || null,
+      snapshot: {
+        pieceStage: toStage,
+        totalLabourMinutes: cur.totalLabourMinutes || 0,
+        totalLabourCost: cur.totalLabourCost || 0,
+      },
+    }, tx);
+    await writeAudit(
+      "GUARD_QC",
+      "guardQCRecords",
+      qcId,
+      actor,
+      { pieceId, verdict, stage: cur.stage },
+      { qcId, verdict, toStage, checkedActionsCount: actions.length },
+      reasonText || undefined,
+      tx
+    );
   });
-  await writeAudit(
-    "GUARD_QC",
-    "guardQCRecords",
-    qcId,
-    actor,
-    { pieceId, verdict, stage: d.stage },
-    { qcId, verdict, toStage, checkedActionsCount: actions.length },
-    reasonText || undefined
-  );
 
   return { ok: true, qcId, pieceId, verdict, toStage };
 });

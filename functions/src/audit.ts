@@ -34,7 +34,12 @@ export function auditDoc(
   };
 }
 
-/** Append an audit log record outside a transaction (add then backfill id). */
+/**
+ * Append an audit log record. Configurable to run inside an existing
+ * transaction (tx) for atomicity with the state change it describes, or
+ * standalone — same pattern as movement.ts's recordMovement(). Returns the
+ * generated doc id.
+ */
 export async function writeAudit(
   action: string,
   entity: string,
@@ -42,9 +47,15 @@ export async function writeAudit(
   actor: AuditActor,
   before: Record<string, unknown> | null,
   after: Record<string, unknown> | null,
-  reason?: string
-) {
-  const data = auditDoc(action, entity, entityId, actor, before, after, reason);
-  const ref = await db.collection("auditLogs").add(data);
-  await ref.update({ id: ref.id });
+  reason?: string,
+  tx?: admin.firestore.Transaction
+): Promise<string> {
+  const ref = db.collection("auditLogs").doc();
+  const data = { ...auditDoc(action, entity, entityId, actor, before, after, reason), id: ref.id };
+  if (tx) {
+    tx.set(ref, data);
+  } else {
+    await ref.set(data);
+  }
+  return ref.id;
 }

@@ -18,7 +18,11 @@
  *
  * Scenarios:
  *   1. guardQcPerform({verdict:"PASS"}) on a QC_PENDING piece, called by a
- *      "guard" actor, succeeds and moves the piece to QC_PASS / active.
+ *      "guard" actor, succeeds and moves the piece to DISPATCH_READY / active
+ *      (updated: the locked business rule now has Guard PASS itself hand off
+ *      to Dispatch directly, rather than resting at an intermediate QC_PASS
+ *      stage — see guardQc.ts and pieces.dispatchHandoff.test.ts for the
+ *      full behavior + movement-history/audit verification).
  *   2. recordPieceMovement({toStage:"QC_PASS"}) on a QC_PENDING piece,
  *      called by an "owner" actor (i.e. exactly what the removed button
  *      used to do), is rejected with failed-precondition and the exact
@@ -93,10 +97,10 @@ async function main(): Promise<void> {
       const snap = await db.doc(`pieces/${pieceId}`).get();
       const d = snap.data();
       console.log(`[1] guardQcPerform(PASS) -> stage now "${d?.stage}", status "${d?.status}", qcVerdict "${d?.qcVerdict}".`);
-      if (d?.stage !== "QC_PASS") fail(`[1] expected stage QC_PASS, got "${d?.stage}".`);
+      if (d?.stage !== "DISPATCH_READY") fail(`[1] expected stage DISPATCH_READY, got "${d?.stage}".`);
       if (d?.status !== "active") fail(`[1] expected status active, got "${d?.status}".`);
       if (d?.qcVerdict !== "PASS") fail(`[1] expected qcVerdict PASS, got "${d?.qcVerdict}".`);
-      if (!result || result.toStage !== "QC_PASS") fail(`[1] expected return toStage QC_PASS, got ${JSON.stringify(result)}.`);
+      if (!result || result.toStage !== "DISPATCH_READY") fail(`[1] expected return toStage DISPATCH_READY, got ${JSON.stringify(result)}.`);
     } catch (err: any) {
       fail(`[1] expected guardQcPerform(PASS) to succeed for a guard actor, but it threw: ${err?.code ?? err}: ${err?.message ?? ""}`);
     }

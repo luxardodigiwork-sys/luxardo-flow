@@ -7,6 +7,7 @@ import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
 import { functions } from '../../firebase';
 import { httpsCallable } from 'firebase/functions';
+import { NEXT_STAGES } from './pieceLifecycle';
 
 const STAGE_COLORS: Record<string, string> = {
   OPEN: 'bg-gray-100 text-gray-600',
@@ -21,30 +22,6 @@ const STAGE_COLORS: Record<string, string> = {
   STORE: 'bg-teal-50 text-teal-600',
   STORE_OUT: 'bg-teal-50 text-teal-700',
   REJECTED: 'bg-red-50 text-red-500',
-};
-
-/**
- * Legal forward stage transitions for the finalized Loom pipeline.
- * Linear production flow + rework loop + tailor branch. REJECTED is terminal.
- * The trusted backend callable (recordPieceMovement) is the authority on
- * validity; this map drives which forward moves the UI exposes.
- */
-const NEXT_STAGES: Record<string, string[]> = {
-  OPEN: ['IN_WORK'],
-  IN_WORK: ['QC_PENDING'],
-  // QC_PENDING has no generic forward moves — verdicts (PASS/REWORK/COMPLETE_REJECT)
-  // go exclusively through guardQcPerform (see the "Guard QC" panel below), matching
-  // the backend's NEXT_STAGES in functions/src/pieces.ts.
-  QC_PENDING: [],
-  REWORK: ['IN_WORK'],
-  QC_PASS: ['DISPATCH_READY'],
-  DISPATCH_READY: ['TAILOR_ASSIGNED', 'STORE'],
-  TAILOR_ASSIGNED: ['STITCHING'],
-  STITCHING: ['STITCH_COMPLETE'],
-  STITCH_COMPLETE: ['STORE'],
-  STORE: ['STORE_OUT'],
-  STORE_OUT: [],
-  REJECTED: [],
 };
 
 const STATUS_COLORS: Record<string, string> = {
