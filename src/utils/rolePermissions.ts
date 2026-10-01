@@ -131,7 +131,7 @@ const MATRIX: Record<Module, Role[]> = {
   'production.requests.reject':      ['super_admin','owner'],
   'production.requests.edit':        ['super_admin','admin','owner'],
   'production.pieces':               ['super_admin','admin','owner','pm','dispatch','guard','tailor','store'],
-  'production.pieces.move':          ['super_admin','admin','owner','pm','dispatch','guard'],
+  'production.pieces.move':          ['super_admin','admin','owner','pm'],
   'production.pieces.reverse':       ['super_admin','admin','owner'],
   'production.pieces.replace':       ['super_admin','admin','owner','pm'],
   'production.pieces.assignKarigar': ['super_admin','admin','owner','pm'],
