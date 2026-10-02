@@ -1,0 +1,14 @@
+{
+  "name": "luxardo-flow-qa-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node seed.cjs",
+    "flow": "node flow-data.mjs",
+    "navcheck": "node navcheck.mjs"
+  },
+  "dependencies": {
+    "firebase": "^12.13.0",
+    "playwright": "^1.50.0"
+  }
+}
