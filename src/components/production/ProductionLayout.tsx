@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Layers, Package, FileText,
-  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound
+  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
@@ -26,13 +26,13 @@ export default function ProductionLayout() {
     {
       title: 'Overview',
       items: [
-        { path: '/production', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','super_admin','owner','pm','designer','dispatch','guard','tailor','store'] },
+        { path: '/production', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','super_admin','owner','pm','designer','dispatch','guard','tailor','store','accounts','analysis'] },
       ],
     },
     {
       title: 'Master Data',
       items: [
-        { path: '/production/staff', label: 'Staff', icon: Users, roles: ['admin','super_admin','owner'] },
+        { path: '/production/staff', label: 'Staff', icon: Users, roles: ['admin','super_admin','owner'], show: can(effectiveRole as any, 'production.staff') },
         { path: '/production/karigars', label: 'Karigars', icon: Users, roles: ['admin','super_admin','owner','pm','dispatch'], show: can(effectiveRole as any, 'production.karigars') },
       ],
     },
@@ -45,6 +45,20 @@ export default function ProductionLayout() {
         { path: '/production/requests', label: 'Production Requests', icon: ClipboardList, roles: ['admin','super_admin','owner','pm','dispatch'], show: can(effectiveRole as any, 'production.requests') },
         { path: '/production/pieces', label: 'Pieces', icon: Package, roles: ['admin','super_admin','owner','pm','dispatch','guard','tailor','store'], show: can(effectiveRole as any, 'production.pieces') },
         { path: '/production/qc', label: 'Guard QC', icon: ShieldCheck, roles: ['admin','super_admin','guard','pm'], show: can(effectiveRole as any, 'production.qc') },
+      ],
+    },
+    /* Role workspaces — these routes existed in App.tsx but had NO link
+     * anywhere in the UI, so Dispatch / Tailor / Store / Owner could not
+     * reach their own daily screens. Each is gated by the same can() module
+     * the page itself checks, so a link is shown only when the page will
+     * actually work for that role. */
+    {
+      title: 'Workspaces',
+      items: [
+        { path: '/production/dispatch', label: 'Dispatch Workspace', icon: Truck, roles: ['dispatch'], show: can(effectiveRole as any, 'production.dispatch.assignTailor') },
+        { path: '/production/tailor', label: 'Tailor Workspace', icon: Scissors, roles: ['tailor'], show: can(effectiveRole as any, 'production.tailor') },
+        { path: '/production/store', label: 'Store Workspace', icon: Warehouse, roles: ['store'], show: can(effectiveRole as any, 'production.store') && can(effectiveRole as any, 'production.pieces') },
+        { path: '/production/tailor-requests', label: 'Tailor Requests', icon: Inbox, roles: ['owner'], show: can(effectiveRole as any, 'production.tailorRequests.review') },
       ],
     },
     // "System" links point into the separate B2C storefront app — never shown
@@ -60,7 +74,11 @@ export default function ProductionLayout() {
 
   const filteredGroups = navGroups.map(g => ({
     ...g,
-    items: g.items.filter(it => it.roles.includes(effectiveRole) || (it as any).show !== false),
+    // `show` (the can() permission check) is the source of truth when an item
+    // defines it; `roles` is only the fallback. The old `roles || show !== false`
+    // test showed every item WITHOUT `show` (e.g. Staff) to every role — a
+    // link that then silently bounced non-admins back to the Dashboard.
+    items: g.items.filter(it => ((it as any).show !== undefined ? (it as any).show : it.roles.includes(effectiveRole))),
   })).filter(g => g.items.length > 0);
 
   const handleLogout = async () => {
