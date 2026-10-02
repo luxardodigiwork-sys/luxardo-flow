@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { db, functions } from '../../firebase';
+import { db, functions, storage } from '../../firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { Scissors, Loader2, Camera } from 'lucide-react';
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { Scissors, Loader2, Camera, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
 
@@ -23,6 +24,35 @@ export default function TailorWorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<Record<string, string>>({});
   const [note, setNote] = useState<Record<string, string>>({});
+  // Storage path of a photo uploaded from the device (camera/gallery). The
+  // backend (tailorCompleteStitching) already accepts garmentImagePath.
+  const [imagePath, setImagePath] = useState<Record<string, string>>({});
+  const [uploadingId, setUploadingId] = useState<string | null>(null);
+
+  /* Tailors work from a phone: let them take/choose a photo instead of
+   * pasting a URL. Uploads to production/tailor/{uid}/{pieceId}/… — the
+   * self-scoped path in storage.loom.rules (image, <10 MB). */
+  const uploadPhoto = async (pieceId: string, file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setError('Please choose a photo (image file).'); return; }
+    if (file.size >= 10 * 1024 * 1024) { setError('Photo is too large (max 10 MB).'); return; }
+    setUploadingId(pieceId);
+    setError(null);
+    try {
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+      const path = `production/tailor/${user?.id}/${pieceId}/${Date.now()}.${ext}`;
+      const r = storageRef(storage, path);
+      await uploadBytes(r, file, { contentType: file.type });
+      const url = await getDownloadURL(r);
+      setImageUrl((s) => ({ ...s, [pieceId]: url }));
+      setImagePath((s) => ({ ...s, [pieceId]: path }));
+    } catch (err: any) {
+      console.error('Garment photo upload failed:', err);
+      setError(err?.message || 'Photo upload failed. Try again.');
+    } finally {
+      setUploadingId(null);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!user?.id) return;
@@ -68,7 +98,7 @@ export default function TailorWorkspacePage() {
   const completeStitching = async (pieceId: string) => {
     const url = (imageUrl[pieceId] || '').trim();
     if (!url) {
-      setError('A garment image URL is mandatory to complete stitching.');
+      setError('A garment photo is mandatory to complete stitching.');
       return;
     }
     setBusyId(pieceId);
@@ -76,6 +106,7 @@ export default function TailorWorkspacePage() {
     try {
       await httpsCallable(functions, 'tailorCompleteStitching')({
         pieceId, garmentImageUrl: url, note: note[pieceId] || '',
+        ...(imagePath[pieceId] ? { garmentImagePath: imagePath[pieceId] } : {}),
       });
       await load();
     } catch (err: any) {
@@ -144,14 +175,38 @@ export default function TailorWorkspacePage() {
               {canWork && piece.stage === 'STITCHING' && (
                 <div className="space-y-2">
                   <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                    <Camera size={12} /> Garment Image URL (mandatory)
+                    <Camera size={12} /> Garment Photo (mandatory)
                   </label>
+                  <label className={`flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed rounded-lg text-xs cursor-pointer transition-colors ${imageUrl[piece.id] ? 'border-green-300 bg-green-50 text-green-700' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
+                    {uploadingId === piece.id ? (
+                      <><Loader2 size={14} className="animate-spin" /> Uploading photo…</>
+                    ) : imageUrl[piece.id] ? (
+                      <><CheckCircle2 size={14} /> Photo added — tap to change</>
+                    ) : (
+                      <><Camera size={14} /> Take / choose photo</>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      data-testid={`garment-photo-${piece.id}`}
+                      disabled={uploadingId === piece.id}
+                      onChange={(e) => { uploadPhoto(piece.id, e.target.files?.[0]); e.target.value = ''; }}
+                    />
+                  </label>
+                  {imageUrl[piece.id] && (
+                    <img src={imageUrl[piece.id]} alt="Garment" className="h-24 w-24 object-cover rounded-lg border border-gray-200" />
+                  )}
                   <input
                     type="text"
-                    placeholder="https://…"
+                    placeholder="…or paste image link (optional)"
                     className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2"
-                    value={imageUrl[piece.id] || ''}
-                    onChange={(e) => setImageUrl((s) => ({ ...s, [piece.id]: e.target.value }))}
+                    value={imagePath[piece.id] ? '' : (imageUrl[piece.id] || '')}
+                    onChange={(e) => {
+                      setImageUrl((s) => ({ ...s, [piece.id]: e.target.value }));
+                      setImagePath((s) => { const n = { ...s }; delete n[piece.id]; return n; });
+                    }}
                   />
                   <input
                     type="text"
@@ -161,7 +216,7 @@ export default function TailorWorkspacePage() {
                     onChange={(e) => setNote((s) => ({ ...s, [piece.id]: e.target.value }))}
                   />
                   <button
-                    disabled={busyId === piece.id}
+                    disabled={busyId === piece.id || uploadingId === piece.id || !(imageUrl[piece.id] || '').trim()}
                     onClick={() => completeStitching(piece.id)}
                     className="px-4 py-2 bg-black text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-30"
                   >

@@ -22,7 +22,7 @@ service firebase.storage {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.admin == true ||
+        request.auth.token.get('admin', false) == true ||
         staffRole() in ['owner', 'admin', 'super_admin']
       );
     }
@@ -45,6 +45,13 @@ service firebase.storage {
     match /production/samplePieces/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['designer', 'pm'])) && isImage() && maxSize(10); }
     match /production/guardQC/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['guard'])) && isImage() && maxSize(10); }
     match /production/tailor/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['tailor'])) && isImage() && maxSize(10); }
+    /* Tailor garment photo (Tailor Workspace "Take / choose photo"). Scoped
+     * to the uploader's OWN uid folder — same self-scoped pattern as
+     * production/profiles below — so it works without the cross-service
+     * Firestore role lookup above. Whether the uploader may actually
+     * complete stitching is still enforced server-side by
+     * tailorCompleteStitching (tailor-only + ownership-checked). */
+    match /production/tailor/{uid}/{p=**} { allow read: if isSignedIn(); allow write: if isSignedIn() && request.auth.uid == uid && isImage() && maxSize(10); }
     match /production/store/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['store', 'dispatch'])) && maxSize(10); }
 
     /* User Profile photo — self-or-admin write, same isImage()+maxSize()
