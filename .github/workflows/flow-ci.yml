@@ -1,0 +1,23 @@
+name: LUXARDO FLOW checks
+# Runs on every push / PR. Does NOT deploy — deploying to luxardo-flow stays a
+# manual, owner-approved step (see CLAUDE.md).
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: (cd functions && npm ci) && (cd functions-loom && npm ci)
+      - name: Typecheck
+        run: npx tsc --noEmit && (cd functions && npx tsc --noEmit)
+      - name: Frontend tests
+        run: for f in src/__tests__/*.ts; do echo "== $f"; npx tsx "$f" || exit 1; done
+      - name: Build Flow (emulator config, build check only)
+        run: cp qa-e2e/env.loom.e2e.example .env.loom && npx vite build --mode loom && (cd functions-loom && npm run build)
