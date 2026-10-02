@@ -123,7 +123,10 @@ export default function ProductionHomePage() {
   const inProduction = pieces.filter(p => (p.stage === 'IN_WORK')).length;
   const openPieces = pieces.filter(p => (p.stage || 'OPEN') === 'OPEN').length;
   const reworkPieces = pieces.filter(p => p.stage === 'REWORK' || p.status === 'in_rework').length;
-  const rejectedPieces = pieces.filter(p => p.status === 'closed' || p.stage === 'REJECTED').length;
+  // Only genuinely rejected pieces. status 'closed' is ALSO set when a piece
+  // leaves via Store-Out (sold/delivered), so counting it here reported every
+  // delivered piece as a "reject" on the Owner dashboard.
+  const rejectedPieces = pieces.filter(p => p.stage === 'REJECTED').length;
   const totalLabourMinutes = pieces.reduce((s, p) => s + (Number(p.totalLabourMinutes) || 0), 0);
   const totalLabourCost = pieces.reduce((s, p) => s + (Number(p.totalLabourCost) || 0), 0);
   const totalReworks = pieces.reduce((s, p) => s + (Number(p.reworkCount) || 0), 0);
@@ -243,6 +246,7 @@ export default function ProductionHomePage() {
           <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 mt-6">
             <h3 className="font-bold text-sm uppercase tracking-widest text-black mb-4">Quick Links</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {canReadPieces && (
               <a
                 href="/production/pieces"
                 className="flex items-center gap-3 p-4 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors"
@@ -253,6 +257,7 @@ export default function ProductionHomePage() {
                   <p className="text-[10px] text-gray-400 uppercase tracking-widest">PIECE-XXXX · pipeline</p>
                 </div>
               </a>
+              )}
               {canReadKarigars && (
                 <a
                   href="/production/karigars"
