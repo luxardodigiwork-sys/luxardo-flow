@@ -54,6 +54,12 @@ service firebase.storage {
     match /production/tailor/{uid}/{p=**} { allow read: if isSignedIn(); allow write: if isSignedIn() && request.auth.uid == uid && isImage() && maxSize(10); }
     match /production/store/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['store', 'dispatch'])) && maxSize(10); }
 
+    /* Design / Sample Design / Sample Piece photos taken in the app
+     * (PhotoField). Self-scoped like production/profiles: the uploader can
+     * only write into their own uid folder; whether they may attach the photo
+     * to a design/sample is re-checked by the callable that saves the URL. */
+    match /production/uploads/{uid}/{p=**} { allow read: if isSignedIn(); allow write: if isSignedIn() && request.auth.uid == uid && isImage() && maxSize(10); }
+
     /* User Profile photo — self-or-admin write, same isImage()+maxSize()
      * boundary as every other production/ path above. {uid} in the path
      * is the User's own uid, so a plain uid-equality check (no Firestore

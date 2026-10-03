@@ -5,6 +5,7 @@ import { functions, db } from '../../firebase';
 import { collection, getDocs, query, orderBy, where } from 'firebase/firestore';
 import { ArrowLeft, Loader2, Plus, X } from 'lucide-react';
 import type { DesignDoc } from '../../types/production';
+import PhotoField from '../../components/production/PhotoField';
 
 export default function SampleDesignCreatePage() {
   const navigate = useNavigate();
@@ -106,10 +107,7 @@ export default function SampleDesignCreatePage() {
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Image URL (optional)</label>
-          <input type="url" value={image} onChange={e => setImage(e.target.value)}
-            placeholder="https://..."
-            className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+          <PhotoField label="Sample design photo" value={image} onChange={setImage} folder="sample-designs" testId="sample-design-photo" />
         </div>
 
         <div className="flex justify-end gap-3 pt-2">

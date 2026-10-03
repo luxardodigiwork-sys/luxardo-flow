@@ -7,6 +7,7 @@ import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
 import { ArrowLeft, Loader2, Check, Clock, User, Camera, Shirt } from 'lucide-react';
 import type { SamplePieceDoc } from '../../types/production';
+import PhotoField from '../../components/production/PhotoField';
 
 const STATUS_COLORS: Record<string, string> = {
   IN_WORK: 'bg-gray-100 text-gray-600',
@@ -122,16 +123,7 @@ export default function SamplePieceDetailPage() {
           <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4">Mark Garment Complete</h2>
           <div className="space-y-4">
             <div>
-              <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
-                Completed Garment Photo * <span className="text-red-500">(required)</span>
-              </label>
-              <input
-                type="url"
-                value={image}
-                onChange={e => setImage(e.target.value)}
-                placeholder="https://…"
-                className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all"
-              />
+              <PhotoField label="Completed garment photo" value={image} onChange={setImage} folder="sample-pieces" required testId="sample-piece-photo" />
             </div>
             <div>
               <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Notes (optional)</label>

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../../firebase';
 import { ArrowLeft, Loader2, Plus, X } from 'lucide-react';
+import PhotoField from '../../components/production/PhotoField';
 
 export default function DesignCreatePage() {
   const navigate = useNavigate();
@@ -63,10 +64,7 @@ export default function DesignCreatePage() {
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Image URL (optional)</label>
-          <input type="url" value={image} onChange={e => setImage(e.target.value)}
-            placeholder="https://..."
-            className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+          <PhotoField label="Design photo" value={image} onChange={setImage} folder="designs" testId="design-photo" />
           <p className="text-[10px] text-gray-400 mt-1">Primary image for the design. Additional images can be added later.</p>
         </div>
 
