@@ -20,7 +20,7 @@
  *     late-stage rework (from DISPATCH_READY) still succeeds unchanged.
  *
  * Scenarios:
- *   1. Valid rework from OPEN succeeds.
+ *   1. Rework from OPEN is rejected (Owner rule, Oct 2026); from IN_WORK succeeds.
  *   2. Valid rework from a late stage (DISPATCH_READY) still succeeds
  *      (confirms the fix did NOT over-restrict beyond the established rule).
  *   3. Invalid: QC_PENDING is rejected with failed-precondition, and the
@@ -85,22 +85,30 @@ async function main(): Promise<void> {
     return { movements: movSnap.size, audits: auditSnap.size };
   }
 
-  // ── Scenario 1: valid rework from OPEN ─────────────────────────────────
+  // ── Scenario 1 (Owner rule, Oct 2026): rework from OPEN is REJECTED, and
+  //    rework from IN_WORK (work actually started) still succeeds. ──────────
   {
     const uid = await seedActor();
     const pieceId = `PIECE-MED1TEST-OPEN-${runId}`;
     await seedPiece(pieceId, "OPEN", "active");
-
     try {
       await wrappedRework({ data: { pieceId, reason: "test rework from OPEN" }, auth: { uid, token: {} } });
-      const snap = await db.doc(`pieces/${pieceId}`).get();
-      const d = snap.data();
-      console.log(`[1] OPEN rework -> stage now "${d?.stage}", status "${d?.status}", reworkCount ${d?.reworkCount}.`);
-      if (d?.stage !== "REWORK") fail(`[1] expected stage REWORK, got "${d?.stage}".`);
-      if (d?.status !== "in_rework") fail(`[1] expected status in_rework, got "${d?.status}".`);
-      if (d?.reworkCount !== 1) fail(`[1] expected reworkCount 1, got ${d?.reworkCount}.`);
+      fail(`[1] expected recordRework to be rejected from OPEN, but it succeeded.`);
     } catch (err: any) {
-      fail(`[1] expected recordRework to succeed from OPEN, but it threw: ${err?.code ?? err}`);
+      console.log(`[1] OPEN rework rejected with code "${err?.code}": ${err?.message}`);
+      if (err?.code !== "failed-precondition") fail(`[1] expected failed-precondition, got ${err?.code ?? err}`);
+    }
+    const workedId = `PIECE-MED1TEST-INWORK-${runId}`;
+    await seedPiece(workedId, "IN_WORK", "active");
+    try {
+      await wrappedRework({ data: { pieceId: workedId, reason: "test rework from IN_WORK" }, auth: { uid, token: {} } });
+      const d = (await db.doc(`pieces/${workedId}`).get()).data();
+      console.log(`[1b] IN_WORK rework -> stage now "${d?.stage}", status "${d?.status}", reworkCount ${d?.reworkCount}.`);
+      if (d?.stage !== "REWORK") fail(`[1b] expected stage REWORK, got "${d?.stage}".`);
+      if (d?.status !== "in_rework") fail(`[1b] expected status in_rework, got "${d?.status}".`);
+      if (d?.reworkCount !== 1) fail(`[1b] expected reworkCount 1, got ${d?.reworkCount}.`);
+    } catch (err: any) {
+      fail(`[1b] expected recordRework to succeed from IN_WORK, but it threw: ${err?.code ?? err}`);
     }
   }
 

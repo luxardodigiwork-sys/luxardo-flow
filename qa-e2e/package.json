@@ -6,7 +6,8 @@
     "seed": "node seed.cjs",
     "flow": "node flow-data.mjs",
     "navcheck": "node navcheck.mjs",
-    "v1-backend": "node backend-v1.mjs"
+    "v1-backend": "node backend-v1.mjs",
+    "v1-ui": "node ui-v1.mjs"
   },
   "dependencies": {
     "firebase": "^12.13.0",
