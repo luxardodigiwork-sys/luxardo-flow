@@ -44,7 +44,16 @@ service firebase.storage {
     match /production/sampleDesigns/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['designer', 'pm'])) && isImage() && maxSize(10); }
     match /production/samplePieces/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['designer', 'pm'])) && isImage() && maxSize(10); }
     match /production/guardQC/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['guard'])) && isImage() && maxSize(10); }
-    match /production/tailor/{p=**} { allow read: if isSignedIn(); allow write: if (isAdmin() || isStaffInRoles(['tailor'])) && isImage() && maxSize(10); }
+    /* SEC-1 fix: this broad path used to also allow any 'tailor'-role staff
+     * member (isStaffInRoles(['tailor'])), not just admins. Storage rules
+     * are evaluated as a union across every matching `match` block, so that
+     * grant applied to EVERY path under production/tailor/ — including
+     * another tailor's own uid subfolder below — completely defeating the
+     * uid-scoping on the narrower rule beneath it (Tailor A could write into
+     * Tailor B's folder). Admin-only here, matching storage.rules:38's
+     * already-correct precedent; plain tailor-role writes now go ONLY
+     * through the uid-scoped rule below. */
+    match /production/tailor/{p=**} { allow read: if isSignedIn(); allow write: if isAdmin() && isImage() && maxSize(10); }
     /* Tailor garment photo (Tailor Workspace "Take / choose photo"). Scoped
      * to the uploader's OWN uid folder — same self-scoped pattern as
      * production/profiles below — so it works without the cross-service
