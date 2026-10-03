@@ -23,7 +23,7 @@ import { generateId } from "./production";
 import { requireStaff, hasAnyRole } from "./staffAuth";
 import { writeAudit } from "./audit";
 import { recordMovement } from "./movement";
-import { applyPrQuantityDelta } from "./productionRequests";
+import { applyPrQuantityDelta, maybeCompletePr } from "./productionRequests";
 import { NEXT_STAGES } from "./pieces";
 
 const db = admin.firestore();
@@ -117,6 +117,13 @@ export const storeOutCreate = onCall(async (request) => {
   }
   await writeAudit("STORE_OUT_CREATE", "storeOuts", storeOutId, actor,
     null, { storeOutId, pieceIds, billNumber: bill, party: party || null, totalPieces: pieceIds.length });
+
+  // A batch can span multiple Production Requests — check completion for
+  // each one actually touched (de-duplicated), not just the first.
+  const touchedPrIds = new Set(Object.values(piecePrIds).filter((v): v is string => !!v));
+  for (const prId of touchedPrIds) {
+    await maybeCompletePr(prId, actor);
+  }
 
   return { ok: true, storeOutId, pieceIds, totalPieces: pieceIds.length };
 });

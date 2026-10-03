@@ -27,7 +27,7 @@ import { generateId } from "./production";
 import { requireStaff, hasAnyRole } from "./staffAuth";
 import { writeAudit } from "./audit";
 import { recordMovement } from "./movement";
-import { applyPrQuantityDelta } from "./productionRequests";
+import { applyPrQuantityDelta, maybeCompletePr } from "./productionRequests";
 
 const db = admin.firestore();
 
@@ -516,6 +516,13 @@ export const recordPieceMovement = onCall(async (request) => {
 
   await writeAudit(dir === "REVERSE" ? "PIECE_REVERSE_MOVE" : "PIECE_STAGE_MOVE", "pieces", pieceId, actor,
     { fromStage, toStage: String(toStage), action, movementId: recId }, { direction: dir, isOverride });
+
+  // Only STORE -> STORE_OUT (the override path through this generic
+  // function — the ordinary path is storeOutCreate) can push a PR's
+  // completedQty up, so only check completion for that transition.
+  if (requestedToStage === "STORE_OUT" && prId) {
+    await maybeCompletePr(prId, actor);
+  }
 
   return { ok: true, pieceId, movementId: recId };
 });

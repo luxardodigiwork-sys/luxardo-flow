@@ -147,6 +147,55 @@ export function applyPrQuantityDelta(
   tx.update(db.doc(`productionRequests/${prId}`), { ...inc, updatedAt: new Date().toISOString() });
 }
 
+/**
+ * Check whether a PR has now been fully, genuinely delivered, and if so
+ * flip it APPROVED/IN_PRODUCTION -> COMPLETED.
+ *
+ * Deliberately excludes rejected/cancelled/undelivered pieces from counting
+ * as "completed" (locked rule): COMPLETED requires completedQty (the
+ * STORE_OUT bucket — the only bucket that means "physically delivered")
+ * to equal the full originally-ordered quantity, AND every other bucket
+ * (pendingQty, currentActiveQty, rejectedQty) to be exactly zero. A piece
+ * sitting in REJECTED with no replacement yet (rejectedQty > 0) is an
+ * unresolved, undelivered slot — the PR must NOT complete while one
+ * exists. createManualReplacementPiece already reflects this correctly:
+ * it moves that slot's rejectedQty back into pendingQty rather than ever
+ * letting rejectedQty resolve to "done".
+ *
+ * MUST be called AFTER the piece-stage-changing transaction has committed
+ * (same reason applyPrQuantityDelta uses blind FieldValue.increment — the
+ * resulting counter values aren't visible until a fresh read), using its
+ * own separate transaction — same append-after-commit pattern already used
+ * for recordMovement/writeAudit elsewhere in this domain. Call only from a
+ * transition that can increase completedQty (currently: STORE -> STORE_OUT,
+ * i.e. storeOutCreate and recordPieceMovement's override path); every other
+ * transition is active<->active or moves away from completion, so calling
+ * this there would just be a wasted read.
+ */
+export async function maybeCompletePr(prId: string | null | undefined, actor: StaffIdentity): Promise<void> {
+  if (!prId) return;
+  const ref = db.doc(`productionRequests/${prId}`);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const d = snap.data()!;
+    if (d.status !== "APPROVED" && d.status !== "IN_PRODUCTION") return;
+
+    const total = Number(d.totalPieceCount) || 0;
+    const completed = Number(d.completedQty) || 0;
+    const pending = Number(d.pendingQty) || 0;
+    const active = Number(d.currentActiveQty) || 0;
+    const rejected = Number(d.rejectedQty) || 0;
+    if (total <= 0) return;
+    if (pending !== 0 || active !== 0 || rejected !== 0 || completed !== total) return;
+
+    const now = new Date().toISOString();
+    tx.update(ref, { status: "COMPLETED", completedAt: now, updatedAt: now });
+    txAudit(tx, "PR_COMPLETE", "productionRequests", prId, actor,
+      { status: d.status }, { status: "COMPLETED", completedQty: completed, totalPieceCount: total });
+  });
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * prCreate — Dispatch/admin/owner creates a production request (DRAFT).
  * Input : { designId, designVersionId, quantity?, urgency?, requiredDate?, garmentType? }
@@ -202,6 +251,7 @@ export const prCreate = onCall(async (request) => {
     requiredDate: String(requiredDate ?? ""),
     cancelledBy: null,
     cancelledAt: null,
+    completedAt: null,
     createdBy: actor.uid,
     createdByName: actor.name,
   };
@@ -509,6 +559,7 @@ export const prReproduce = onCall(async (request) => {
     requiredDate: String(requiredDate ?? ""),
     cancelledBy: null,
     cancelledAt: null,
+    completedAt: null,
     createdBy: actor.uid,
     createdByName: actor.name,
   };
@@ -542,7 +593,7 @@ export const prGeneratePieces = onCall(async (request) => {
   const prSnap = await prRef.get();
   if (!prSnap.exists) throw new HttpsError("not-found", `PR ${prId} not found.`);
   const pr = prSnap.data()!;
-  if (pr.status !== "APPROVED" || !pr.originalQtyFrozen) {
+  if ((pr.status !== "APPROVED" && pr.status !== "IN_PRODUCTION") || !pr.originalQtyFrozen) {
     throw new HttpsError("failed-precondition", "Pieces can only be generated after Owner approval.");
   }
 
@@ -573,10 +624,20 @@ export const prGeneratePieces = onCall(async (request) => {
     if (gen + toCreate > Number(cur.originalOrderedQty) || Number(cur.originalOrderedQty) <= 0) {
       throw new HttpsError("failed-precondition", "Piece generation would exceed the approved quantity.");
     }
-    tx.update(prRef, {
+    const prUpdate: Record<string, unknown> = {
       piecesGeneratedCount: gen + toCreate,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    // First-ever piece generation on an APPROVED PR marks production as
+    // actually started. One-way (APPROVED -> IN_PRODUCTION only); a second
+    // generateId("piece") call on an already-IN_PRODUCTION PR (generating
+    // the remainder of the ordered quantity) leaves status untouched.
+    if (cur.status === "APPROVED") {
+      prUpdate.status = "IN_PRODUCTION";
+      txAudit(tx, "PR_IN_PRODUCTION", "productionRequests", prId, actor,
+        { status: "APPROVED" }, { status: "IN_PRODUCTION" });
+    }
+    tx.update(prRef, prUpdate);
 
     for (const pieceId of pieceIds) {
       tx.set(db.doc(`pieces/${pieceId}`), {
