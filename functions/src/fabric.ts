@@ -170,7 +170,12 @@ export const fabricUpdate = onCall(async (request) => {
     if (updates.name !== undefined) {
       const n = String(updates.name).trim();
       if (!n) throw new HttpsError("invalid-argument", "Fabric name cannot be empty.");
-      patch.name = n; patch.nameKey = n.toLowerCase();
+      const nameKey = n.toLowerCase();
+      if (nameKey !== before.nameKey) {
+        const dup = await tx.get(db.collection("fabricMasters").where("nameKey", "==", nameKey).limit(1));
+        if (!dup.empty) throw new HttpsError("already-exists", `A fabric named "${n}" already exists.`);
+      }
+      patch.name = n; patch.nameKey = nameKey;
     }
     if (updates.colour !== undefined) patch.colour = String(updates.colour).trim();
     if (updates.gsm !== undefined) patch.gsm = Number(updates.gsm) > 0 ? Number(updates.gsm) : null;
