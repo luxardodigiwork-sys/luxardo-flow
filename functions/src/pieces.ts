@@ -27,7 +27,7 @@ import { generateId } from "./production";
 import { requireStaff, hasAnyRole } from "./staffAuth";
 import { writeAudit } from "./audit";
 import { recordMovement } from "./movement";
-import { applyPrQuantityDelta } from "./productionRequests";
+import { applyPrQuantityDelta, syncPrStatus } from "./productionRequests";
 
 const db = admin.firestore();
 
@@ -324,6 +324,7 @@ export const completeRejectPiece = onCall(async (request) => {
   await writeAudit("PIECE_COMPLETE_REJECT", "pieces", pieceId, actor,
     { stage: data.stage, status: data.status }, { stage: "REJECTED", status: "closed", rejectionReason: reasonText });
 
+  await syncPrStatus(data.prId || null);
   return { ok: true, pieceId };
 });
 
@@ -543,5 +544,6 @@ export const recordPieceMovement = onCall(async (request) => {
   await writeAudit(dir === "REVERSE" ? "PIECE_REVERSE_MOVE" : "PIECE_STAGE_MOVE", "pieces", pieceId, actor,
     { fromStage, toStage: String(toStage), action, movementId: recId }, { direction: dir, isOverride });
 
+  await syncPrStatus(prId);
   return { ok: true, pieceId, movementId: recId };
 });

@@ -23,7 +23,7 @@ import { generateId } from "./production";
 import { requireStaff, hasAnyRole } from "./staffAuth";
 import { writeAudit } from "./audit";
 import { recordMovement } from "./movement";
-import { applyPrQuantityDelta } from "./productionRequests";
+import { applyPrQuantityDelta, syncPrStatus } from "./productionRequests";
 import { NEXT_STAGES } from "./pieces";
 
 const db = admin.firestore();
@@ -181,6 +181,7 @@ export const labourStart = onCall(async (request) => {
   await writeAudit("LABOUR_START", "pieceWorkSessions", sessionId, actor,
     { pieceId, karigarId, stage: data.stage, hourlyRate }, { sessionId, type: isRework ? "REWORK" : "FIRST", hourlyRate, startedAt });
 
+  await syncPrStatus(data.prId || null);
   return { ok: true, sessionId, pieceId, karigarId, hourlyRate };
 });
 

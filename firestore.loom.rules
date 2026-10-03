@@ -178,6 +178,30 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    /* ── Fabric Inventory (V1) ──────────────────────────────────────
+     * Read-only for clients; every write goes through functions/src/fabric.ts.
+     */
+    match /fabricMasters/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','dispatch','designer','pm','guard']);
+      allow write: if false;
+    }
+    match /designFabricGuides/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','dispatch','designer','pm','guard']);
+      allow write: if false;
+    }
+    match /fabricLedger/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','dispatch']);
+      allow write: if false;
+    }
+    match /fabricIssues/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','dispatch','pm','guard']);
+      allow write: if false;
+    }
+    match /fabricAlerts/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','dispatch']);
+      allow write: if false;
+    }
+
     /* ── Deny-all (catch-all) ───────────────────────────────────────── */
     match /{document=**} { allow read, write: if false; }
   }

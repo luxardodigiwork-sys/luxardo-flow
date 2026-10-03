@@ -66,7 +66,6 @@ export {
   prEditApproved,
   prReproduce,
   prGeneratePieces,
-  prStatusSync,
 } from "../../functions/src/productionRequests";
 
 /* Phase 2 · Block 3 — Physical Piece domain */
@@ -115,3 +114,16 @@ export {
   approveTailorRequest,
   rejectTailorRequest,
 } from "../../functions/src/tailorRequests";
+/* Fabric Inventory (V1, Owner-confirmed 3 Oct 2026) — meters; Dispatch stocks
+ * in and issues to Guard; auto-deduct from design fabric guide; low-stock
+ * alerts for Dispatch + Owner. */
+export {
+  fabricCreate,
+  fabricUpdate,
+  fabricStockIn,
+  designFabricGuideSet,
+  listActiveGuards,
+  fabricIssueCreate,
+  fabricIssueReceive,
+  fabricAlertResolve,
+} from "../../functions/src/fabric";

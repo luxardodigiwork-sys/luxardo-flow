@@ -19,7 +19,6 @@
  */
 
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import * as crypto from "crypto";
 import { generateId } from "./production";
@@ -89,24 +88,41 @@ export function derivePrStatus(d: Record<string, any>): string | null {
   return null;
 }
 
-/** Firestore trigger: keeps PR status in sync with its piece counters. Every
- * piece-moving callable already updates the counters via
- * applyPrQuantityDelta, so this one place covers all of them. Idempotent: a
- * status write re-triggers it, derivePrStatus then returns null. */
-export const prStatusSync = onDocumentUpdated("productionRequests/{prId}", async (event) => {
-  const after = event.data?.after;
-  if (!after?.exists) return;
-  const next = derivePrStatus(after.data() || {});
-  if (!next) return;
-  const now = new Date().toISOString();
-  const patch: Record<string, unknown> = { status: next, updatedAt: now };
-  if (next === "IN_PRODUCTION") patch.productionStartedAt = now;
-  if (next === "COMPLETED") patch.completedAt = now;
-  await after.ref.update(patch);
-  await writeAudit("PR_STATUS_AUTO", "productionRequests", event.params.prId,
-    { uid: "system", name: "system", role: "system" },
-    { status: after.data()?.status }, { status: next });
-});
+/**
+ * Re-derive and persist a PR's status from its piece counters. Called right
+ * after every callable whose transaction can move a piece out of OPEN or into
+ * STORE_OUT/REJECTED (labourStart, recordPieceMovement, completeRejectPiece,
+ * storeOutCreate). Runs in its own small transaction (fresh read), is
+ * idempotent, and never throws into the caller — the piece move has already
+ * committed, so a status-sync hiccup must not turn it into a reported error.
+ */
+export async function syncPrStatus(prId: string | null | undefined): Promise<void> {
+  if (!prId) return;
+  try {
+    const ref = db.doc(`productionRequests/${prId}`);
+    let changed: { from: string; to: string } | null = null;
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const d = snap.data()!;
+      const next = derivePrStatus(d);
+      if (!next) return;
+      const now = new Date().toISOString();
+      const patch: Record<string, unknown> = { status: next, updatedAt: now };
+      if (next === "IN_PRODUCTION") patch.productionStartedAt = now;
+      if (next === "COMPLETED") patch.completedAt = now;
+      tx.update(ref, patch);
+      changed = { from: String(d.status), to: next };
+    });
+    if (changed) {
+      const c = changed as { from: string; to: string };
+      await writeAudit("PR_STATUS_AUTO", "productionRequests", prId,
+        { uid: "system", name: "system", role: "system" }, { status: c.from }, { status: c.to });
+    }
+  } catch (err) {
+    console.error("syncPrStatus failed", prId, err);
+  }
+}
 
 function normalizeQty(n: unknown): number {
   const q = Number(n);

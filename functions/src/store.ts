@@ -23,7 +23,7 @@ import { generateId } from "./production";
 import { requireStaff, hasAnyRole } from "./staffAuth";
 import { writeAudit } from "./audit";
 import { recordMovement } from "./movement";
-import { applyPrQuantityDelta } from "./productionRequests";
+import { applyPrQuantityDelta, syncPrStatus } from "./productionRequests";
 import { NEXT_STAGES } from "./pieces";
 
 const db = admin.firestore();
@@ -118,6 +118,7 @@ export const storeOutCreate = onCall(async (request) => {
   await writeAudit("STORE_OUT_CREATE", "storeOuts", storeOutId, actor,
     null, { storeOutId, pieceIds, billNumber: bill, party: party || null, totalPieces: pieceIds.length });
 
+  for (const p of new Set(Object.values(piecePrIds))) await syncPrStatus(p);
   return { ok: true, storeOutId, pieceIds, totalPieces: pieceIds.length };
 });
 

@@ -124,6 +124,8 @@ const ID_PREFIXES: Record<string, string> = {
   tailorSession:    "TS-",
   labourSession:    "LS-",
   tailorRequest:    "TR-",
+  fabric:           "FAB-",
+  fabricIssue:      "FI-",
 };
 
 /**
