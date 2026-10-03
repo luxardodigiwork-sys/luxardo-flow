@@ -68,17 +68,23 @@ export default function ProductionHomePage() {
   const navigate = useNavigate();
   const staffRole = user?.staffRole || user?.role || '';
   const effectiveRole = (staffRole || '') as Role;
+  const staffUid = user?.id || '';
 
   const [pieces, setPieces] = useState<any[]>([]);
   const [prs, setPrs] = useState<any[]>([]);
   const [karigars, setKarigars] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lowFabrics, setLowFabrics] = useState<any[]>([]);
+  const [pendingFabric, setPendingFabric] = useState(0);
 
   // Read gates mirror the Firestore rules so a role never queries a collection
   // it is not allowed to read. Guard/tailor/store → piece pipeline only.
   const canReadPieces = can(effectiveRole, 'production.pieces');
   const canReadPrs = can(effectiveRole, 'production.requests');
   const canReadKarigars = can(effectiveRole, 'production.karigars');
+  // Low-stock fabric alert: Dispatch + Owner (+ admin). Guard: fabric waiting.
+  const canSeeFabricAlerts = can(effectiveRole, 'production.fabric.manage');
+  const isGuard = effectiveRole === 'guard';
 
   const load = useCallback(async () => {
     try {
@@ -110,11 +116,25 @@ export default function ProductionHomePage() {
             .catch(err => console.error('Failed to load karigars:', err))
         );
       }
+      if (canSeeFabricAlerts) {
+        jobs.push(
+          getDocs(query(collection(db, 'fabricMasters'), where('lowStock', '==', true)))
+            .then(snap => setLowFabrics(snap.docs.map(d => d.data()).filter(f => f.active !== false)))
+            .catch(err => console.error('Failed to load fabric alerts:', err))
+        );
+      }
+      if (isGuard && staffUid) {
+        jobs.push(
+          getDocs(query(collection(db, 'fabricIssues'), where('issuedTo', '==', staffUid)))
+            .then(snap => setPendingFabric(snap.docs.filter(d => d.data().status === 'ISSUED').length))
+            .catch(err => console.error('Failed to load fabric issues:', err))
+        );
+      }
       await Promise.all(jobs);
     } finally {
       setLoading(false);
     }
-  }, [canReadPieces, canReadPrs, canReadKarigars]);
+  }, [canReadPieces, canReadPrs, canReadKarigars, canSeeFabricAlerts, isGuard, staffUid]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -144,6 +164,21 @@ export default function ProductionHomePage() {
           {roleLabel(staffRole)} · Loom Production Overview{loading && ' · loading…'}
         </p>
       </div>
+
+      {lowFabrics.length > 0 && (
+        <a href="/production/fabric" data-testid="dashboard-low-stock"
+          className="block mb-6 p-4 rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100 transition-colors">
+          <p className="text-xs font-bold uppercase tracking-widest text-amber-800">Low fabric stock</p>
+          <p className="text-sm mt-1">{lowFabrics.map(f => `${f.name} — ${f.stockMeters} m left`).join(' · ')}</p>
+        </a>
+      )}
+      {isGuard && pendingFabric > 0 && (
+        <a href="/production/fabric-issues" data-testid="dashboard-fabric-pending"
+          className="block mb-6 p-4 rounded-2xl border border-blue-200 bg-blue-50 text-blue-900 hover:bg-blue-100 transition-colors">
+          <p className="text-xs font-bold uppercase tracking-widest text-blue-800">Fabric issued to you</p>
+          <p className="text-sm mt-1">{pendingFabric} issue{pendingFabric === 1 ? '' : 's'} waiting for you to confirm receipt.</p>
+        </a>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-24">

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Layers, Package, FileText,
-  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox
+  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox, PackageCheck
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
@@ -45,6 +45,13 @@ export default function ProductionLayout() {
         { path: '/production/requests', label: 'Production Requests', icon: ClipboardList, roles: ['admin','super_admin','owner','pm','dispatch'], show: can(effectiveRole as any, 'production.requests') },
         { path: '/production/pieces', label: 'Pieces', icon: Package, roles: ['admin','super_admin','owner','pm','dispatch','guard','tailor','store'], show: can(effectiveRole as any, 'production.pieces') },
         { path: '/production/qc', label: 'Guard QC', icon: ShieldCheck, roles: ['admin','super_admin','guard','pm'], show: can(effectiveRole as any, 'production.qc') },
+      ],
+    },
+    {
+      title: 'Fabric',
+      items: [
+        { path: '/production/fabric', label: 'Fabric Inventory', icon: Layers, roles: ['dispatch'], show: can(effectiveRole as any, 'production.fabric') },
+        { path: '/production/fabric-issues', label: 'Fabric Issues', icon: PackageCheck, roles: ['guard'], show: can(effectiveRole as any, 'production.fabric.issues') },
       ],
     },
     /* Role workspaces — these routes existed in App.tsx but had NO link

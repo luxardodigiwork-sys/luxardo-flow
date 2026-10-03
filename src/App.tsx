@@ -118,6 +118,8 @@ import DispatchWorkspacePage from "./pages/production/DispatchWorkspacePage";
 import TailorWorkspacePage from "./pages/production/TailorWorkspacePage";
 import StoreWorkspacePage from "./pages/production/StoreWorkspacePage";
 import TailorRequestReviewPage from "./pages/production/TailorRequestReviewPage";
+import FabricInventoryPage from "./pages/production/FabricInventoryPage";
+import FabricIssuesPage from "./pages/production/FabricIssuesPage";
 
 const ProtectedBackendRoute = ({
   role,
@@ -192,6 +194,9 @@ function ProductionRoutes() {
         <Route path="tailor" element={<TailorWorkspacePage />} />
         <Route path="store" element={<StoreWorkspacePage />} />
         <Route path="tailor-requests" element={<TailorRequestReviewPage />} />
+        {/* Fabric Inventory (V1) */}
+        <Route path="fabric" element={<FabricInventoryPage />} />
+        <Route path="fabric-issues" element={<FabricIssuesPage />} />
       </Route>
     </>
   );

@@ -78,6 +78,12 @@ type Module =
   | 'production.store'
   | 'production.store.out'
   | 'production.store.out.issue'
+  // ── Fabric Inventory (V1) ──
+  | 'production.fabric'
+  | 'production.fabric.manage'
+  | 'production.fabric.guide'
+  | 'production.fabric.issues'
+  | 'production.fabric.receive'
   | 'production.reports'
   | 'production.reports.export'
   | 'production.audit'
@@ -160,6 +166,13 @@ const MATRIX: Record<Module, Role[]> = {
   // Strict, matching storeOutCreate/storeOutReportIssue's backend gate.
   'production.store.out':            ['store'],
   'production.store.out.issue':      ['store'],
+  // Fabric Inventory (V1) — mirrors functions/src/fabric.ts gates
+  // (FABRIC_MANAGERS / FABRIC_GUIDE_EDITORS / receive) and firestore.loom.rules.
+  'production.fabric':               ['super_admin','admin','owner','dispatch','designer','pm'],
+  'production.fabric.manage':        ['super_admin','admin','owner','dispatch'],
+  'production.fabric.guide':         ['super_admin','admin','owner','dispatch','designer'],
+  'production.fabric.issues':        ['super_admin','admin','owner','dispatch','pm','guard'],
+  'production.fabric.receive':       ['guard'],
   'production.reports':              ['super_admin','owner'],
   'production.reports.export':       ['super_admin','owner'],
   'production.audit':                ['super_admin','admin','owner'],

@@ -10,6 +10,7 @@ import {
   Clock, User, FileText
 } from 'lucide-react';
 import type { DesignDoc, DesignVersionDoc } from '../../types/production';
+import { DesignFabricGuideSection } from '../../components/production/FabricSections';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -264,6 +265,12 @@ export default function DesignDetailPage() {
           </div>
         )}
       </div>
+
+      {design && (
+        <div className="mt-6">
+          <DesignFabricGuideSection designId={design.id} />
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (

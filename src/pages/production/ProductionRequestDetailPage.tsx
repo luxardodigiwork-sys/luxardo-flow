@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { ProductionRequestDoc, PRAuditDoc } from '../../types/production';
 import { useScrollLock } from '../../utils/useScrollLock';
+import { PrFabricIssueSection } from '../../components/production/FabricSections';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -533,6 +534,9 @@ export default function ProductionRequestDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Fabric (V1): requirement from the design's fabric guide + issue to Guard */}
+      <PrFabricIssueSection pr={request} onChanged={loadRequest} />
 
       {/* Post-approval audit trail */}
       {(isApproved || request.status === 'COMPLETED') && (
