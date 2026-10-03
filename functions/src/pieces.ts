@@ -239,6 +239,14 @@ export const recordRework = onCall(async (request) => {
     if (fromStage === "REWORK") {
       throw new HttpsError("failed-precondition", `Piece ${pieceId} is already in REWORK.`);
     }
+    // Owner rule (Oct 2026): rework only applies to a piece that has actually
+    // been worked on. An OPEN piece (no karigar work yet) cannot be reworked.
+    if (fromStage === "OPEN") {
+      throw new HttpsError(
+        "failed-precondition",
+        `Piece ${pieceId} is OPEN — work has not started, so it cannot be sent to rework.`
+      );
+    }
     const now = new Date().toISOString();
     tx.update(ref, {
       stage: "REWORK",
@@ -492,6 +500,24 @@ export const recordPieceMovement = onCall(async (request) => {
           "failed-precondition",
           `Invalid transition: ${fromStage} -> ${requestedToStage} is not allowed.`
         );
+      }
+      // Owner rule (Oct 2026): a piece cannot go to QC while any karigar
+      // labour session on it is still running — otherwise labour time keeps
+      // accruing while the piece sits at QC. Read inside the transaction so a
+      // concurrent labourStart forces a retry instead of racing past.
+      if (requestedToStage === "QC_PENDING") {
+        const open = await tx.get(
+          db.collection("pieceWorkSessions")
+            .where("pieceId", "==", pieceId)
+            .where("endedAt", "==", null)
+            .limit(1)
+        );
+        if (!open.empty) {
+          throw new HttpsError(
+            "failed-precondition",
+            `Stop the running karigar session on ${pieceId} before sending it to QC.`
+          );
+        }
       }
       tx.update(ref, {
         stage: requestedToStage,

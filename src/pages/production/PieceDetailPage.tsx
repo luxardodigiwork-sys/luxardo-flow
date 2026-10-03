@@ -208,6 +208,10 @@ export default function PieceDetailPage() {
   const currentStage = piece.stage || 'OPEN';
   const nextStages = NEXT_STAGES[currentStage] || [];
   const isReworked = piece.status === 'in_rework' || currentStage === 'REWORK';
+  // Owner rules (Oct 2026), mirrored from the server: no QC while a karigar
+  // session is still running; no rework on a piece where work never started.
+  const hasRunningSession = sessions.some(s => !s.endedAt);
+  const canMarkRework = currentStage !== 'OPEN';
   const isCompletelyRejected =
     piece.status === 'closed' &&
     currentStage === 'REJECTED' &&
@@ -481,11 +485,17 @@ export default function PieceDetailPage() {
             <p className="text-sm text-gray-400">No forward moves available from this stage.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
+              {nextStages.includes('QC_PENDING') && hasRunningSession && (
+                <p className="w-full text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+                  A karigar session is still running. Stop it before sending this piece to QC.
+                </p>
+              )}
               {nextStages.map(stage => (
                 <button
                   key={stage}
                   onClick={() => { setPendingMove(stage); setMoveNotice(''); }}
-                  disabled={moveBusy}
+                  disabled={moveBusy || (stage === 'QC_PENDING' && hasRunningSession)}
+                  title={stage === 'QC_PENDING' && hasRunningSession ? 'Stop the running karigar session first' : undefined}
                   className={`inline-flex items-center px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-colors disabled:opacity-40 ${
                     pendingMove === stage
                       ? 'bg-black text-white'
@@ -592,7 +602,7 @@ export default function PieceDetailPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {!isClosed && !isReworked && (
+            {!isClosed && !isReworked && canMarkRework && (
               <button
                 onClick={() => { setLifecycleAction('REWORK'); setLifecycleNotice(''); setLifecycleError(false); setReplacementPieceId(''); }}
                 disabled={lifecycleBusy}

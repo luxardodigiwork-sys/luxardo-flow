@@ -66,6 +66,7 @@ export {
   prEditApproved,
   prReproduce,
   prGeneratePieces,
+  prStatusSync,
 } from "../../functions/src/productionRequests";
 
 /* Phase 2 · Block 3 — Physical Piece domain */

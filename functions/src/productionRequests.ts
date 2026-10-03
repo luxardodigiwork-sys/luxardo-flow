@@ -19,6 +19,7 @@
  */
 
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import * as crypto from "crypto";
 import { generateId } from "./production";
@@ -63,6 +64,49 @@ async function assertFrozenDesignVersion(designId: string, designVersionId: stri
     throw new HttpsError("failed-precondition", "Only an Owner-approved (frozen) design version can be produced.");
   }
 }
+
+/** Owner-approved PRs that are still running (post-approval edits and piece
+ * generation stay allowed once production has started). */
+const PR_LIVE_STATUSES = ["APPROVED", "IN_PRODUCTION"];
+
+/**
+ * Owner rule (Oct 2026): PR status follows real piece progress.
+ *  - APPROVED -> IN_PRODUCTION as soon as any piece leaves OPEN
+ *    (active, completed or rejected counter > 0).
+ *  - APPROVED/IN_PRODUCTION -> COMPLETED only when delivered (STORE_OUT)
+ *    pieces reach the Owner-frozen ordered quantity. Rejected pieces never
+ *    count as delivered; a rejected piece must be replaced and delivered.
+ * Pure function so it can be unit-tested without Firestore.
+ */
+export function derivePrStatus(d: Record<string, any>): string | null {
+  const status = String(d.status || "");
+  if (!PR_LIVE_STATUSES.includes(status) || !d.originalQtyFrozen) return null;
+  const ordered = Number(d.originalOrderedQty) || 0;
+  const completed = Number(d.completedQty) || 0;
+  const started = (Number(d.currentActiveQty) || 0) + completed + (Number(d.rejectedQty) || 0);
+  if (ordered > 0 && completed >= ordered) return status === "COMPLETED" ? null : "COMPLETED";
+  if (status === "APPROVED" && started > 0) return "IN_PRODUCTION";
+  return null;
+}
+
+/** Firestore trigger: keeps PR status in sync with its piece counters. Every
+ * piece-moving callable already updates the counters via
+ * applyPrQuantityDelta, so this one place covers all of them. Idempotent: a
+ * status write re-triggers it, derivePrStatus then returns null. */
+export const prStatusSync = onDocumentUpdated("productionRequests/{prId}", async (event) => {
+  const after = event.data?.after;
+  if (!after?.exists) return;
+  const next = derivePrStatus(after.data() || {});
+  if (!next) return;
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { status: next, updatedAt: now };
+  if (next === "IN_PRODUCTION") patch.productionStartedAt = now;
+  if (next === "COMPLETED") patch.completedAt = now;
+  await after.ref.update(patch);
+  await writeAudit("PR_STATUS_AUTO", "productionRequests", event.params.prId,
+    { uid: "system", name: "system", role: "system" },
+    { status: after.data()?.status }, { status: next });
+});
 
 function normalizeQty(n: unknown): number {
   const q = Number(n);
@@ -399,7 +443,7 @@ export const prEditApproved = onCall(async (request) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", `PR ${id} not found.`);
     const d = snap.data()!;
-    if (!d.originalQtyFrozen || d.status !== "APPROVED") {
+    if (!d.originalQtyFrozen || !PR_LIVE_STATUSES.includes(d.status)) {
       throw new HttpsError("failed-precondition", "Only approved PRs support post-approval edits (urgency/requiredDate).");
     }
 
@@ -542,7 +586,7 @@ export const prGeneratePieces = onCall(async (request) => {
   const prSnap = await prRef.get();
   if (!prSnap.exists) throw new HttpsError("not-found", `PR ${prId} not found.`);
   const pr = prSnap.data()!;
-  if (pr.status !== "APPROVED" || !pr.originalQtyFrozen) {
+  if (!PR_LIVE_STATUSES.includes(pr.status) || !pr.originalQtyFrozen) {
     throw new HttpsError("failed-precondition", "Pieces can only be generated after Owner approval.");
   }
 

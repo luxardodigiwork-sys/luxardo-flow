@@ -189,7 +189,9 @@ export default function ProductionRequestDetailPage() {
   }
 
   const isEditable = !request.originalQtyFrozen && !['APPROVED', 'IN_PRODUCTION', 'COMPLETED'].includes(request.status);
-  const isApproved = request.originalQtyFrozen && request.status === 'APPROVED';
+  // APPROVED and IN_PRODUCTION are both live, Owner-approved states (status
+  // auto-advances to IN_PRODUCTION once pieces start moving).
+  const isApproved = request.originalQtyFrozen && ['APPROVED', 'IN_PRODUCTION'].includes(request.status);
 
   return (
     <div className="min-h-screen p-6 md:p-8 max-w-4xl">
@@ -533,7 +535,7 @@ export default function ProductionRequestDetailPage() {
       </div>
 
       {/* Post-approval audit trail */}
-      {isApproved && (
+      {(isApproved || request.status === 'COMPLETED') && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
           <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4">Post-Approval Edit History</h2>
           {audits.length === 0 ? (
