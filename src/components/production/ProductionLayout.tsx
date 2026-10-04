@@ -5,7 +5,7 @@ import {
   LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox, HelpCircle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { can } from '../../utils/rolePermissions';
+import { can, roleBadgeLabel } from '../../utils/rolePermissions';
 import { isLoomHost, getPostLogoutRedirectPath } from '../../utils/loomIdentity';
 import { useScrollLock } from '../../utils/useScrollLock';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -104,6 +104,13 @@ export default function ProductionLayout() {
       <aside className="w-64 bg-white border-r border-gray-200 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20">
         <div className="p-8 border-b border-gray-100 flex flex-col justify-center min-h-[100px] shrink-0">
           <FlowLogo size="md" />
+          {/* Persistent role identity (V1 Stabilization Step 2) — sourced
+              from the same authenticated staff identity every nav item
+              below is already filtered by (effectiveRole), never from the
+              email address. */}
+          <span className="inline-flex self-start items-center mt-3 px-2.5 py-1 bg-black text-white text-[11px] font-bold uppercase tracking-widest rounded-md">
+            {roleBadgeLabel(effectiveRole)}
+          </span>
           <p className="text-[10px] text-gray-400 uppercase tracking-widest mt-2 font-bold">Loom · Production</p>
         </div>
 
@@ -189,6 +196,9 @@ export default function ProductionLayout() {
               <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white shrink-0">
                 <div>
                   <FlowLogo size="sm" />
+                  <span className="inline-flex items-center mt-2 px-2 py-0.5 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded-md">
+                    {roleBadgeLabel(effectiveRole)}
+                  </span>
                   <p className="text-[9px] text-gray-400 uppercase tracking-widest mt-1 font-bold">Loom · Production</p>
                 </div>
                 <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-50 rounded-lg transition-colors">
@@ -262,13 +272,20 @@ export default function ProductionLayout() {
       <main className="flex-1 flex flex-col h-screen min-h-0 min-w-0 overflow-hidden bg-gray-50/50">
         {/* Mobile Header */}
         <header className="md:hidden bg-white/80 backdrop-blur-md border-b border-gray-200 px-4 h-16 flex justify-between items-center shrink-0 z-30 shadow-sm">
-          <div className="flex items-center gap-3">
-            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-black hover:bg-gray-100 rounded-lg transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-black hover:bg-gray-100 rounded-lg transition-colors shrink-0">
               <Menu size={20} />
             </button>
-            <h1 className="font-display text-sm tracking-[0.2em] uppercase text-black">Loom</h1>
+            {/* Persistent role identity, mobile — takes the slot the plain
+                "Loom" wordmark used to occupy here (branding stays intact in
+                the drawer header above; not a branding change, just which
+                text wins the limited h-16 top-bar space per the role-first
+                requirement). */}
+            <span className="inline-flex items-center px-2.5 py-1 bg-black text-white text-[11px] font-bold uppercase tracking-widest rounded-md truncate">
+              {roleBadgeLabel(effectiveRole)}
+            </span>
           </div>
-          <button onClick={handleLogout} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
+          <button onClick={handleLogout} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors shrink-0">
             <LogOut size={18} />
           </button>
         </header>

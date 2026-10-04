@@ -235,3 +235,34 @@ export function roleLabel(role: Role | undefined | null): string {
     default: return 'Guest';
   }
 }
+
+/**
+ * Short, bold, uppercase label for the persistent Flow role-identity badge
+ * (ProductionLayout.tsx's sidebar + mobile header) — deliberately NOT the
+ * same strings as roleLabel() above (e.g. "PM" not "Production Manager",
+ * "ANALYSIS" not "Analytics"): the badge needs to fit a fixed-height mobile
+ * header without truncation, while roleLabel()'s longer, title-cased forms
+ * stay unchanged for every existing call site (ProductionHomePage,
+ * UserProfilePage, StaffManagementPage) that already relies on them. The
+ * canonical role string itself is never altered by this — callers keep
+ * using the same lowercase `role` for every permission check; this is
+ * display-only.
+ */
+export function roleBadgeLabel(role: Role | undefined | null): string {
+  switch ((role || '').toLowerCase()) {
+    case 'super_admin': return 'SUPER ADMIN';
+    case 'admin': return 'ADMIN';
+    case 'owner': return 'OWNER';
+    case 'designer': return 'DESIGNER';
+    case 'pm': return 'PM';
+    case 'dispatch': return 'DISPATCH';
+    case 'guard': return 'GUARD';
+    case 'tailor': return 'TAILOR';
+    case 'store': return 'STORE';
+    case 'accounts': return 'ACCOUNTS';
+    case 'analysis': return 'ANALYSIS';
+    // Fail-safe: an unrecognised/missing role never renders blank or a
+    // guessed privileged label — a generic, clearly non-privileged tag.
+    default: return 'STAFF';
+  }
+}
