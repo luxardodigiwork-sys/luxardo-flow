@@ -214,10 +214,10 @@ export const labourStop = onCall(async (request) => {
   const hourlyRate = Number(session.hourlyRate) || 0;
   const labourCost = Math.round((minutes / 60) * hourlyRate * 100) / 100;
 
-  const pieceRef = db.doc(`pieces/${pieceId}`);
-  const pieceSnap = await pieceRef.get();
-  if (!pieceSnap.exists) throw new HttpsError("not-found", `Piece ${pieceId} not found.`);
-  const piece = pieceSnap.data()!;
+  // Locked rule: a session on a permanently closed/replaced piece can never
+  // be stopped — reuses the exact same piece-status semantics labourStart
+  // already enforces via this helper (not duplicated business logic).
+  const { ref: pieceRef, data: piece } = await assertLabourPiece(pieceId);
 
   // totalLabourMinutes/totalLabourCost are computed from a fresh in-transaction
   // read of pieceRef (never the pre-transaction snapshot above) so concurrent
@@ -234,6 +234,12 @@ export const labourStop = onCall(async (request) => {
 
     const pSnap = await tx.get(pieceRef);
     const p = pSnap.data()!;
+    // Re-check from the fresh in-transaction read (same race-safety reason
+    // the rest of this transaction already re-reads instead of trusting the
+    // pre-transaction assertLabourPiece() result).
+    if (p.status === "closed" || p.status === "replaced") {
+      throw new HttpsError("failed-precondition", `Piece ${pieceId} is ${p.status} and cannot receive work.`);
+    }
     const prevMinutes = Number(p.totalLabourMinutes) || 0;
     const prevCost = Number(p.totalLabourCost) || 0;
     newMinutes = prevMinutes + minutes;

@@ -213,6 +213,12 @@ export default function PieceDetailPage() {
     currentStage === 'REJECTED' &&
     piece.rejectionType === 'COMPLETE_REJECT' &&
     !piece.replacedByPieceId;
+  // Locked rule (server-enforced in recordPieceMovement/recordRework/
+  // completeRejectPiece): QC_PENDING, REWORK and REJECTED must never be
+  // reached with an open labour session underneath. This is a UX guard
+  // only — stop the session first, then the move/action proceeds exactly
+  // as today; the server is the real authority and rejects it regardless.
+  const hasOpenSession = sessions.some(s => !s.endedAt);
 
   const handleAssign = async () => {
     if (!selectedKarigar || busy) return;
@@ -481,21 +487,31 @@ export default function PieceDetailPage() {
             <p className="text-sm text-gray-400">No forward moves available from this stage.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {nextStages.map(stage => (
-                <button
-                  key={stage}
-                  onClick={() => { setPendingMove(stage); setMoveNotice(''); }}
-                  disabled={moveBusy}
-                  className={`inline-flex items-center px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-colors disabled:opacity-40 ${
-                    pendingMove === stage
-                      ? 'bg-black text-white'
-                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {stage}
-                </button>
-              ))}
+              {nextStages.map(stage => {
+                // Locked rule: QC_PENDING must never be reached with an open
+                // labour session underneath (recordPieceMovement enforces
+                // this server-side) — stop it first.
+                const blockedByOpenSession = stage === 'QC_PENDING' && hasOpenSession;
+                return (
+                  <button
+                    key={stage}
+                    onClick={() => { setPendingMove(stage); setMoveNotice(''); }}
+                    disabled={moveBusy || blockedByOpenSession}
+                    title={blockedByOpenSession ? 'Stop the open labour session before moving to QC_PENDING.' : undefined}
+                    className={`inline-flex items-center px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-colors disabled:opacity-40 ${
+                      pendingMove === stage
+                        ? 'bg-black text-white'
+                        : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    {stage}
+                  </button>
+                );
+              })}
             </div>
+          )}
+          {nextStages.includes('QC_PENDING') && hasOpenSession && (
+            <p className="mt-3 text-xs text-amber-600">An open labour session must be stopped before moving to QC_PENDING.</p>
           )}
 
           {pendingMove && (
@@ -595,7 +611,8 @@ export default function PieceDetailPage() {
             {!isClosed && !isReworked && (
               <button
                 onClick={() => { setLifecycleAction('REWORK'); setLifecycleNotice(''); setLifecycleError(false); setReplacementPieceId(''); }}
-                disabled={lifecycleBusy}
+                disabled={lifecycleBusy || hasOpenSession}
+                title={hasOpenSession ? 'Stop the open labour session before marking rework.' : undefined}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-orange-100 transition-colors disabled:opacity-40"
               >
                 <RotateCcw size={12} />
@@ -605,12 +622,16 @@ export default function PieceDetailPage() {
             {!isClosed && (
               <button
                 onClick={() => { setLifecycleAction('COMPLETE_REJECT'); setLifecycleNotice(''); setLifecycleError(false); setReplacementPieceId(''); }}
-                disabled={lifecycleBusy}
+                disabled={lifecycleBusy || hasOpenSession}
+                title={hasOpenSession ? 'Stop the open labour session before rejecting.' : undefined}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-red-100 transition-colors disabled:opacity-40"
               >
                 <Ban size={12} />
                 Complete Reject
               </button>
+            )}
+            {!isClosed && hasOpenSession && (
+              <p className="w-full text-xs text-amber-600">An open labour session must be stopped before Rework or Complete Reject.</p>
             )}
             {isCompletelyRejected && (
               <button

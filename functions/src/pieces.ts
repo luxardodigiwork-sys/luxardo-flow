@@ -93,6 +93,34 @@ export async function assertOpenPiece(pieceId: string): Promise<{ ref: admin.fir
   return { ref, data: d };
 }
 
+/**
+ * Locked rule: a piece must never reach QC_PENDING, REWORK or REJECTED while
+ * it has an open (unstopped, endedAt == null) labour session — the PM/Admin
+ * /Owner must explicitly stop it first (no auto-stop side effect here).
+ *
+ * MUST be called with `tx.get()` (not a plain `.get()`), run INSIDE the same
+ * transaction as the piece's own stage mutation — same race-safety reasoning
+ * labourStart's own open-session check already relies on (functions/src/
+ * labour.ts): the query's result set joins the transaction's read set, so a
+ * concurrent labourStart opening a session after this check but before
+ * commit forces this transaction to retry and see it, instead of both
+ * racing past a point-in-time-only check.
+ */
+async function assertNoOpenLabourSession(tx: admin.firestore.Transaction, pieceId: string): Promise<void> {
+  const openSessionSnap = await tx.get(
+    db.collection("pieceWorkSessions")
+      .where("pieceId", "==", pieceId)
+      .where("endedAt", "==", null)
+      .limit(1)
+  );
+  if (!openSessionSnap.empty) {
+    throw new HttpsError(
+      "failed-precondition",
+      `Piece ${pieceId} has an open labour session — stop it before moving to this stage.`
+    );
+  }
+}
+
 /** Karigar must exist and be active. */
 async function assertActiveKarigar(karigarId: string): Promise<admin.firestore.DocumentData> {
   const snap = await db.doc(`karigars/${karigarId}`).get();
@@ -239,6 +267,9 @@ export const recordRework = onCall(async (request) => {
     if (fromStage === "REWORK") {
       throw new HttpsError("failed-precondition", `Piece ${pieceId} is already in REWORK.`);
     }
+    // Locked rule: REWORK must never be reached with an open labour session
+    // underneath — the PM must stop it explicitly first (no auto-stop).
+    await assertNoOpenLabourSession(tx, pieceId);
     const now = new Date().toISOString();
     tx.update(ref, {
       stage: "REWORK",
@@ -291,6 +322,10 @@ export const completeRejectPiece = onCall(async (request) => {
     if (cur.status === "closed" || cur.status === "replaced") {
       throw new HttpsError("failed-precondition", `Piece ${pieceId} is ${cur.status} and cannot be rejected.`);
     }
+    // Locked rule: REJECTED must never be reached with an open labour
+    // session underneath — the PM must stop it explicitly first (no
+    // auto-stop).
+    await assertNoOpenLabourSession(tx, pieceId);
     const now = new Date().toISOString();
     const fromStage = String(cur.stage || "OPEN");
     tx.update(ref, {
@@ -492,6 +527,13 @@ export const recordPieceMovement = onCall(async (request) => {
           "failed-precondition",
           `Invalid transition: ${fromStage} -> ${requestedToStage} is not allowed.`
         );
+      }
+      // Locked rule: QC_PENDING/REWORK/REJECTED must never be reached with
+      // an open labour session underneath — the PM must stop it explicitly
+      // first (no auto-stop). The other stages this function can reach
+      // (DISPATCH_READY, STORE_OUT, etc.) are unaffected.
+      if (requestedToStage === "QC_PENDING" || requestedToStage === "REWORK" || requestedToStage === "REJECTED") {
+        await assertNoOpenLabourSession(tx, pieceId);
       }
       tx.update(ref, {
         stage: requestedToStage,
