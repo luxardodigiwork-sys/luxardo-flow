@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Layers, Package, FileText,
-  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox
+  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox, HelpCircle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
@@ -10,12 +10,14 @@ import { isLoomHost } from '../../utils/loomIdentity';
 import { useScrollLock } from '../../utils/useScrollLock';
 import { AnimatePresence, motion } from 'framer-motion';
 import FlowLogo from '../FlowLogo';
+import GuideTour from './GuideTour';
 
 export default function ProductionLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [tourReplaySignal, setTourReplaySignal] = useState(0);
   useScrollLock(isMobileMenuOpen);
 
   const staffRole = user?.staffRole || '';
@@ -81,6 +83,12 @@ export default function ProductionLayout() {
     items: g.items.filter(it => ((it as any).show !== undefined ? (it as any).show : it.roles.includes(effectiveRole))),
   })).filter(g => g.items.length > 0);
 
+  // The exact set of nav paths this role is seeing right now — the Guide
+  // Tour's authoritative RBAC guard (see buildGuideTourSteps). Derived from
+  // the SAME filteredGroups used to render the nav, so it can never drift
+  // from what's actually on screen.
+  const visibleNavPaths = filteredGroups.flatMap(g => g.items.map(it => it.path));
+
   const handleLogout = async () => {
     await logout();
     navigate(loom ? '/login' : '/admin/login');
@@ -115,6 +123,7 @@ export default function ProductionLayout() {
                     <Link
                       key={item.path}
                       to={item.path}
+                      data-tour-nav-desktop={item.path}
                       className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-all duration-200 rounded-lg group ${
                         isActive
                           ? 'bg-black text-white font-medium shadow-sm'
@@ -138,6 +147,13 @@ export default function ProductionLayout() {
           >
             {user?.name} · {staffRole || user?.role}
           </Link>
+          <button
+            onClick={() => setTourReplaySignal(s => s + 1)}
+            className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg group"
+          >
+            <HelpCircle size={16} className="text-gray-400 group-hover:text-black transition-colors" />
+            <span className="tracking-wide">Guide Tour</span>
+          </button>
           <button
             onClick={handleLogout}
             className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg group"
@@ -192,6 +208,7 @@ export default function ProductionLayout() {
                             key={item.path}
                             to={item.path}
                             onClick={() => setIsMobileMenuOpen(false)}
+                            data-tour-nav-mobile={item.path}
                             className={`flex items-center gap-3 px-4 py-3 text-sm transition-all duration-200 rounded-lg ${
                               isActive
                                 ? 'bg-black text-white font-medium'
@@ -217,6 +234,13 @@ export default function ProductionLayout() {
                   <UserRound size={18} className="text-gray-400" />
                   <span className="tracking-wide">My Profile</span>
                 </Link>
+                <button
+                  onClick={() => setTourReplaySignal(s => s + 1)}
+                  className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg"
+                >
+                  <HelpCircle size={18} className="text-gray-400" />
+                  <span className="tracking-wide">Guide Tour</span>
+                </button>
                 <button
                   onClick={handleLogout}
                   className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg"
@@ -249,6 +273,14 @@ export default function ProductionLayout() {
           <Outlet />
         </div>
       </main>
+
+      <GuideTour
+        role={effectiveRole}
+        visibleNavPaths={visibleNavPaths}
+        mobileMenuOpen={isMobileMenuOpen}
+        onRequestMobileMenu={setIsMobileMenuOpen}
+        replaySignal={tourReplaySignal}
+      />
     </div>
   );
 }
