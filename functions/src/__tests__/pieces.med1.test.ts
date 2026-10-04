@@ -13,16 +13,25 @@
  *     domain for recording a REWORK verdict).
  *   - recordRework must reject a piece already at REWORK (matches the UI's
  *     own !isReworked gate, which already hides the action in this state).
- *   - Every OTHER active stage (OPEN, IN_WORK, QC_PASS, DISPATCH_READY,
- *     TAILOR_ASSIGNED, STITCHING, STITCH_COMPLETE, STORE) remains reworkable
- *     — this is a deliberately broad PM/Admin/Owner correction mechanism,
- *     not a single-predecessor transition, so this test also confirms a
- *     late-stage rework (from DISPATCH_READY) still succeeds unchanged.
+ *   - Locked rule (added after this test's original scenario 1 — see
+ *     pieceRework.untouchedGuard.test.ts for the dedicated regression):
+ *     recordRework must reject a piece with no firstWorkAt (never had any
+ *     production work), which by construction is exactly the OPEN stage.
+ *     Scenario 1 below was UPDATED in place (not superseded) to assert this.
+ *   - Every OTHER active stage WITH prior recorded work (IN_WORK, QC_PASS,
+ *     DISPATCH_READY, TAILOR_ASSIGNED, STITCHING, STITCH_COMPLETE, STORE)
+ *     remains reworkable — this is a deliberately broad PM/Admin/Owner
+ *     correction mechanism, not a single-predecessor transition, so this
+ *     test also confirms a late-stage rework (from DISPATCH_READY, with
+ *     firstWorkAt set) still succeeds unchanged.
  *
  * Scenarios:
- *   1. Valid rework from OPEN succeeds.
- *   2. Valid rework from a late stage (DISPATCH_READY) still succeeds
- *      (confirms the fix did NOT over-restrict beyond the established rule).
+ *   1. Invalid: an OPEN/untouched piece (no firstWorkAt) is rejected with
+ *      failed-precondition, and the piece document is completely unmutated
+ *      afterward.
+ *   2. Valid rework from a late stage (DISPATCH_READY) WITH firstWorkAt set
+ *      still succeeds (confirms the fix did NOT over-restrict beyond the
+ *      established rule for pieces that genuinely have prior work).
  *   3. Invalid: QC_PENDING is rejected with failed-precondition, and the
  *      piece document is completely unmutated afterward.
  *   4. Invalid: an already-REWORK piece is rejected with failed-precondition,
@@ -69,12 +78,13 @@ async function main(): Promise<void> {
     return uid;
   }
 
-  async function seedPiece(pieceId: string, stage: string, status: string): Promise<void> {
+  async function seedPiece(pieceId: string, stage: string, status: string, firstWorkAt: string | null = null): Promise<void> {
     await db.doc(`pieces/${pieceId}`).set({
       id: pieceId, stage, status,
       qcVerdict: null, rejectionType: null, rejectionReason: null,
       reworkCount: 0, rejectedAt: null, rejectedBy: null, rejectedByName: null,
       totalLabourMinutes: 0, totalLabourCost: 0,
+      firstWorkAt,
       updatedAt: new Date(0).toISOString(),
     });
   }
@@ -85,30 +95,39 @@ async function main(): Promise<void> {
     return { movements: movSnap.size, audits: auditSnap.size };
   }
 
-  // ── Scenario 1: valid rework from OPEN ─────────────────────────────────
+  // ── Scenario 1: invalid — OPEN/untouched piece has no firstWorkAt ──────
   {
     const uid = await seedActor();
     const pieceId = `PIECE-MED1TEST-OPEN-${runId}`;
-    await seedPiece(pieceId, "OPEN", "active");
+    await seedPiece(pieceId, "OPEN", "active"); // firstWorkAt defaults to null
+    const before = (await db.doc(`pieces/${pieceId}`).get()).data();
+    const beforeCounts = await countMovementAndAudit(pieceId);
 
     try {
-      await wrappedRework({ data: { pieceId, reason: "test rework from OPEN" }, auth: { uid, token: {} } });
-      const snap = await db.doc(`pieces/${pieceId}`).get();
-      const d = snap.data();
-      console.log(`[1] OPEN rework -> stage now "${d?.stage}", status "${d?.status}", reworkCount ${d?.reworkCount}.`);
-      if (d?.stage !== "REWORK") fail(`[1] expected stage REWORK, got "${d?.stage}".`);
-      if (d?.status !== "in_rework") fail(`[1] expected status in_rework, got "${d?.status}".`);
-      if (d?.reworkCount !== 1) fail(`[1] expected reworkCount 1, got ${d?.reworkCount}.`);
+      await wrappedRework({ data: { pieceId, reason: "should be rejected" }, auth: { uid, token: {} } });
+      fail(`[1] expected recordRework to be rejected from OPEN/untouched, but it succeeded.`);
     } catch (err: any) {
-      fail(`[1] expected recordRework to succeed from OPEN, but it threw: ${err?.code ?? err}`);
+      const code = err?.code ?? "unknown";
+      console.log(`[1] OPEN/untouched rework rejected with code "${code}": ${err?.message ?? err}`);
+      if (code !== "failed-precondition") fail(`[1] expected rejection code "failed-precondition", got "${code}".`);
+    }
+
+    const after = (await db.doc(`pieces/${pieceId}`).get()).data();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      fail(`[1] expected the piece document to be completely unmutated after rejection.\n  before: ${JSON.stringify(before)}\n  after:  ${JSON.stringify(after)}`);
+    }
+    const afterCounts = await countMovementAndAudit(pieceId);
+    if (afterCounts.movements !== beforeCounts.movements || afterCounts.audits !== beforeCounts.audits) {
+      fail(`[1] expected no new movement/audit records for a rejected call, got movements ${beforeCounts.movements}->${afterCounts.movements}, audits ${beforeCounts.audits}->${afterCounts.audits}.`);
     }
   }
 
-  // ── Scenario 2: valid rework from a LATE stage (DISPATCH_READY) ────────
+  // ── Scenario 2: valid rework from a LATE stage (DISPATCH_READY) WITH
+  //    firstWorkAt set — a piece that genuinely has prior work ────────────
   {
     const uid = await seedActor();
     const pieceId = `PIECE-MED1TEST-LATE-${runId}`;
-    await seedPiece(pieceId, "DISPATCH_READY", "active");
+    await seedPiece(pieceId, "DISPATCH_READY", "active", new Date(0).toISOString());
 
     try {
       await wrappedRework({ data: { pieceId, reason: "test rework from DISPATCH_READY" }, auth: { uid, token: {} } });
@@ -184,9 +203,10 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    "MED-1 REGRESSION TEST: PASS — valid rework (including from a late " +
-    "stage) succeeds, QC_PENDING and already-REWORK are correctly rejected " +
-    "with no piece mutation and no stray movement/audit records."
+    "MED-1 REGRESSION TEST: PASS — an OPEN/untouched piece (no firstWorkAt) " +
+    "is now correctly rejected, valid rework from a late stage WITH prior " +
+    "work still succeeds, and QC_PENDING/already-REWORK are correctly " +
+    "rejected with no piece mutation and no stray movement/audit records."
   );
 }
 

@@ -219,6 +219,12 @@ export default function PieceDetailPage() {
   // only — stop the session first, then the move/action proceeds exactly
   // as today; the server is the real authority and rejects it regardless.
   const hasOpenSession = sessions.some(s => !s.endedAt);
+  // Locked rule (server-enforced in recordRework): an OPEN/untouched piece
+  // — one with no firstWorkAt, i.e. no production work has ever started on
+  // it — must never be manually moved to REWORK. UX guard only; the server
+  // rejects it regardless. Guard-driven QC rework is unaffected (it only
+  // ever fires from QC_PENDING, which always has prior work).
+  const hasNoProductionWork = !piece.firstWorkAt;
 
   const handleAssign = async () => {
     if (!selectedKarigar || busy) return;
@@ -611,8 +617,14 @@ export default function PieceDetailPage() {
             {!isClosed && !isReworked && (
               <button
                 onClick={() => { setLifecycleAction('REWORK'); setLifecycleNotice(''); setLifecycleError(false); setReplacementPieceId(''); }}
-                disabled={lifecycleBusy || hasOpenSession}
-                title={hasOpenSession ? 'Stop the open labour session before marking rework.' : undefined}
+                disabled={lifecycleBusy || hasOpenSession || hasNoProductionWork}
+                title={
+                  hasNoProductionWork
+                    ? 'This piece has not started any production work yet — nothing to rework.'
+                    : hasOpenSession
+                      ? 'Stop the open labour session before marking rework.'
+                      : undefined
+                }
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-orange-100 transition-colors disabled:opacity-40"
               >
                 <RotateCcw size={12} />
@@ -632,6 +644,9 @@ export default function PieceDetailPage() {
             )}
             {!isClosed && hasOpenSession && (
               <p className="w-full text-xs text-amber-600">An open labour session must be stopped before Rework or Complete Reject.</p>
+            )}
+            {!isClosed && !isReworked && !hasOpenSession && hasNoProductionWork && (
+              <p className="w-full text-xs text-amber-600">This piece has not started any production work yet — it cannot be marked for Rework.</p>
             )}
             {isCompletelyRejected && (
               <button

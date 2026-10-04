@@ -237,7 +237,7 @@ export const recordRework = onCall(async (request) => {
       throw new HttpsError("failed-precondition", `Piece ${pieceId} is ${cur.status} and cannot be reworked.`);
     }
     const fromStage = String(cur.stage || "OPEN");
-    // MED-1 — two preconditions established from the existing, already-shipped
+    // MED-1 — preconditions established from the existing, already-shipped
     // design rather than a newly-invented rule:
     //  1. QC_PENDING is guard-exclusive (NEXT_STAGES["QC_PENDING"] = [] and its
     //     own comment above states PASS/REWORK/REJECTED verdicts out of
@@ -252,12 +252,28 @@ export const recordRework = onCall(async (request) => {
     //     (isReworked = status==='in_rework' || stage==='REWORK'), which
     //     already hides the "Mark Rework" action in this state; the server
     //     simply didn't enforce what the UI already assumed.
-    // Every OTHER active stage (OPEN, IN_WORK, QC_PASS, DISPATCH_READY,
-    // TAILOR_ASSIGNED, STITCHING, STITCH_COMPLETE, STORE) remains reworkable,
-    // matching the UI's deliberately broad `!isClosed && !isReworked` gate —
-    // recordRework is a PM/Admin/Owner correction mechanism usable at any
-    // point in a piece's active lifecycle, not a single-predecessor
-    // transition like labourStart, so no additional stage is restricted here.
+    //  3. Locked rule: an OPEN/untouched piece — one that has never had any
+    //     production work recorded on it — must never be manually moved to
+    //     REWORK. `firstWorkAt` is set once, only by labourStart() when a
+    //     piece's FIRST work session begins (functions/src/labour.ts), and is
+    //     never cleared or backdated afterward, so "no firstWorkAt" is the
+    //     exact, already-existing signal for "no completed production work"
+    //     — not a new field or workflow. This also closes the OPEN stage
+    //     case (stage is only ever set to OPEN at piece creation/replacement
+    //     and never transitions back to it, so OPEN implies firstWorkAt is
+    //     null) without hard-coding fromStage === "OPEN" specifically, so a
+    //     piece that somehow reached a later stage without any real labour
+    //     session underneath is caught the same way. Guard-driven REWORK
+    //     (guardQcPerform) is a completely separate function and is
+    //     unaffected — it only ever fires from QC_PENDING, which always has
+    //     prior work by construction.
+    // Every OTHER active stage with recorded work (IN_WORK, QC_PASS,
+    // DISPATCH_READY, TAILOR_ASSIGNED, STITCHING, STITCH_COMPLETE, STORE)
+    // remains reworkable, matching the UI's deliberately broad
+    // `!isClosed && !isReworked` gate — recordRework is a PM/Admin/Owner
+    // correction mechanism usable at any point in a piece's active
+    // lifecycle, not a single-predecessor transition like labourStart, so no
+    // additional stage is restricted here.
     if (fromStage === "QC_PENDING") {
       throw new HttpsError(
         "failed-precondition",
@@ -266,6 +282,12 @@ export const recordRework = onCall(async (request) => {
     }
     if (fromStage === "REWORK") {
       throw new HttpsError("failed-precondition", `Piece ${pieceId} is already in REWORK.`);
+    }
+    if (!cur.firstWorkAt) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Piece ${pieceId} has not started any production work yet (${fromStage}) — cannot be reworked.`
+      );
     }
     // Locked rule: REWORK must never be reached with an open labour session
     // underneath — the PM must stop it explicitly first (no auto-stop).
