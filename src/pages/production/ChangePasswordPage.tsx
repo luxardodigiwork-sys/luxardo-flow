@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { KeyRound, Eye, EyeOff, ShieldAlert, ArrowRight, LogOut, ShieldCheck } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
+import { isLoomHost, getPostLogoutRedirectPath } from '../../utils/loomIdentity';
 import FlowLogo from '../../components/FlowLogo';
 
 /**
@@ -17,6 +19,18 @@ import FlowLogo from '../../components/FlowLogo';
  */
 export default function ChangePasswordPage() {
   const { user, logout, updateLoomUser } = useAuth();
+  const navigate = useNavigate();
+  const effectiveRole = user?.staffRole || user?.role || '';
+
+  // Same role-aware redirect as ProductionLayout.tsx's handleLogout — the
+  // SAME shared helper, no duplicated role logic. This screen is only ever
+  // reached pre-/production (mustChangePassword gate), so there is no "from"
+  // location to return to; always land on the correct login page.
+  const handleSignOut = async () => {
+    await logout();
+    navigate(getPostLogoutRedirectPath(effectiveRole, isLoomHost()));
+  };
+
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
@@ -121,7 +135,7 @@ export default function ChangePasswordPage() {
               </button>
               <button
                 type="button"
-                onClick={() => logout()}
+                onClick={handleSignOut}
                 className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2 flex items-center justify-center gap-1"
               >
                 <LogOut size={12} /> Sign out

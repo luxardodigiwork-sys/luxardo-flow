@@ -63,6 +63,20 @@ export function isEligibleForPrivilegedLoginPage(role: unknown): boolean {
 }
 
 /**
+ * Single source of truth for "which login page does a signed-out User land
+ * on" — used by every post-logout redirect (ProductionLayout.tsx's
+ * handleLogout, ChangePasswordPage.tsx's sign-out) so the decision is never
+ * duplicated inline. Mirrors isEligibleForPrivilegedLoginPage exactly: Owner/
+ * Admin/Super Admin -> the privileged page, every other canonical role -> the
+ * common staff page. Non-Loom (B2C) hosts always return "/admin/login",
+ * matching that branch's pre-existing, unrelated behavior — left untouched.
+ */
+export function getPostLogoutRedirectPath(role: unknown, loomHost: boolean): string {
+  if (!loomHost) return "/admin/login";
+  return isEligibleForPrivilegedLoginPage(role) ? "/admin/login" : "/login";
+}
+
+/**
  * Canonical form of a role string, or null when it is not a recognised
  * canonical staff role. Legacy / typo roles (e.g. "grade") return null and
  * therefore fail closed — they are repaired only by the server-side

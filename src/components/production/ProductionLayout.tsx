@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
-import { isLoomHost } from '../../utils/loomIdentity';
+import { isLoomHost, getPostLogoutRedirectPath } from '../../utils/loomIdentity';
 import { useScrollLock } from '../../utils/useScrollLock';
 import { AnimatePresence, motion } from 'framer-motion';
 import FlowLogo from '../FlowLogo';
@@ -91,7 +91,11 @@ export default function ProductionLayout() {
 
   const handleLogout = async () => {
     await logout();
-    navigate(loom ? '/login' : '/admin/login');
+    // Role-aware redirect — Owner/Admin/Super Admin back to the privileged
+    // login page, every other canonical role back to the common staff page.
+    // Shared with ChangePasswordPage.tsx's sign-out via the SAME helper, so
+    // this decision has exactly one implementation.
+    navigate(getPostLogoutRedirectPath(effectiveRole, loom));
   };
 
   return (
