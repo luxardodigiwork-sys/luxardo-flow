@@ -54,7 +54,7 @@ async function assertApprovedDesign(designId: string): Promise<void> {
 
 /* ═══════════════════════════════════════════════════════════════════
  * sampleDesignCreate — create a small fabric swatch sample.
- * Input : { name, description?, image?, images?, catalogDesignId?, designVersionId? }
+ * Input : { name, description?, image?, imagePath?, images?, catalogDesignId?, designVersionId? }
  * Output: { ok, id, sample }
  * ═══════════════════════════════════════════════════════════════════ */
 export const sampleDesignCreate = onCall(async (request) => {
@@ -64,8 +64,8 @@ export const sampleDesignCreate = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Designer/Admin/Owner access required.");
   }
 
-  const { name, description, image, images, catalogDesignId, designVersionId } = (request.data || {}) as {
-    name?: string; description?: string; image?: string; images?: string[];
+  const { name, description, image, imagePath, images, catalogDesignId, designVersionId } = (request.data || {}) as {
+    name?: string; description?: string; image?: string; imagePath?: string; images?: string[];
     catalogDesignId?: string; designVersionId?: string;
   };
   if (!name || !String(name).trim()) throw new HttpsError("invalid-argument", "Sample design name is required.");
@@ -81,6 +81,7 @@ export const sampleDesignCreate = onCall(async (request) => {
     name: String(name).trim(),
     description: String(description ?? ""),
     image: String(image ?? ""),
+    imagePath: imagePath || null, // storage path backing `image` when uploaded, not pasted
     images: Array.isArray(images) ? images.map(String) : [],
     status: "DRAFT",
     currentVersion: 1,
@@ -109,8 +110,8 @@ export const sampleDesignUpdate = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Designer/Admin/Owner access required.");
   }
 
-  const { id, name, description, image, images, catalogDesignId, designVersionId } = (request.data || {}) as {
-    id?: string; name?: string; description?: string; image?: string; images?: string[];
+  const { id, name, description, image, imagePath, images, catalogDesignId, designVersionId } = (request.data || {}) as {
+    id?: string; name?: string; description?: string; image?: string; imagePath?: string; images?: string[];
     catalogDesignId?: string; designVersionId?: string;
   };
   if (!id) throw new HttpsError("invalid-argument", "Sample design id required.");
@@ -128,7 +129,10 @@ export const sampleDesignUpdate = onCall(async (request) => {
       patch.name = String(name).trim();
     }
     if (description !== undefined) patch.description = String(description);
-    if (image !== undefined) patch.image = String(image);
+    if (image !== undefined) {
+      patch.image = String(image);
+      patch.imagePath = imagePath || null; // see designUpdate's identical pairing
+    }
     if (images !== undefined) {
       if (!Array.isArray(images)) throw new HttpsError("invalid-argument", "images must be an array.");
       patch.images = images.map(String);
@@ -252,7 +256,7 @@ export const samplePieceCreate = onCall(async (request) => {
 
 /* ═══════════════════════════════════════════════════════════════════
  * samplePieceComplete — mark sample piece garment complete (image compulsory).
- * Input : { id, image, notes? }
+ * Input : { id, image, imagePath?, notes? }
  * ═══════════════════════════════════════════════════════════════════ */
 export const samplePieceComplete = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
@@ -260,7 +264,7 @@ export const samplePieceComplete = onCall(async (request) => {
   if (!hasAnyRole(actor, SAMPLE_WRITERS)) {
     throw new HttpsError("permission-denied", "Designer/Admin/Owner access required.");
   }
-  const { id, image, notes } = (request.data || {}) as { id?: string; image?: string; notes?: string };
+  const { id, image, imagePath, notes } = (request.data || {}) as { id?: string; image?: string; imagePath?: string; notes?: string };
   if (!id) throw new HttpsError("invalid-argument", "Sample piece id required.");
   if (!image || !String(image).trim()) {
     throw new HttpsError("invalid-argument", "A completed garment photo (image) is compulsory.");
@@ -275,6 +279,7 @@ export const samplePieceComplete = onCall(async (request) => {
     tx.update(ref, {
       status: "COMPLETE",
       image: String(image).trim(),
+      imagePath: imagePath || null, // storage path backing `image` when uploaded, not pasted
       notes: notes !== undefined ? String(notes) : d.notes,
       updatedAt: new Date().toISOString(),
     });

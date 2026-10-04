@@ -115,6 +115,7 @@ export interface DesignDoc {
   name: string;
   description: string;
   image: string;
+  imagePath: string | null; // storage path backing `image` when uploaded (camera/gallery), null when pasted
   images: string[];
   status: DesignStatus; // DRAFT → APPROVED → FROZEN
   currentVersion: number;
@@ -166,6 +167,7 @@ export interface SampleDesignDoc {
   name: string;
   description: string;
   image: string;
+  imagePath: string | null; // storage path backing `image` when uploaded (camera/gallery), null when pasted
   images: string[];
   status: SampleDesignStatus; // DRAFT → PENDING_APPROVAL → APPROVED (frozen)
   currentVersion: number;
@@ -206,6 +208,7 @@ export interface SamplePieceDoc {
   status: SamplePieceStatus; // IN_WORK → COMPLETE (garment photo) → APPROVED (owner)
   notes: string;
   image: string; // Photo of completed garment (compulsory on COMPLETE)
+  imagePath: string | null; // storage path backing `image` when uploaded (camera/gallery), null when pasted
   approvedBy: string | null;
   approvedByName: string | null;
   approvedAt: string | null;

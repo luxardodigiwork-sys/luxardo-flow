@@ -3,15 +3,19 @@ import { useNavigate } from 'react-router-dom';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../../firebase';
 import { ArrowLeft, Loader2, Plus, X } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import PhotoUploadField from '../../components/production/PhotoUploadField';
 
 export default function DesignCreatePage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [image, setImage] = useState('');
+  const [imagePath, setImagePath] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,6 +29,7 @@ export default function DesignCreatePage() {
         name: name.trim(),
         description: description.trim() || undefined,
         image: image.trim() || undefined,
+        imagePath: imagePath || undefined,
       });
 
       setToast({ type: 'success', message: `Design "${name.trim()}" created (ID: ${(result.data as any).id}).` });
@@ -63,10 +68,14 @@ export default function DesignCreatePage() {
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Image URL (optional)</label>
-          <input type="url" value={image} onChange={e => setImage(e.target.value)}
-            placeholder="https://..."
-            className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+          <PhotoUploadField
+            storagePathPrefix="production/designs"
+            uid={user?.id || ''}
+            value={image}
+            imagePath={imagePath}
+            onChange={(url, path) => { setImage(url); setImagePath(path); }}
+            label="Design Photo (optional)"
+          />
           <p className="text-[10px] text-gray-400 mt-1">Primary image for the design. Additional images can be added later.</p>
         </div>
 

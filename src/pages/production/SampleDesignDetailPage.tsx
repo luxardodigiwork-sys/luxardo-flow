@@ -5,7 +5,8 @@ import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
-import { ArrowLeft, Loader2, Send, Check, Clock, User, FileText } from 'lucide-react';
+import { ArrowLeft, Loader2, Send, Check, Clock, User, FileText, Save } from 'lucide-react';
+import PhotoUploadField from '../../components/production/PhotoUploadField';
 import type { SampleDesignDoc } from '../../types/production';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -27,12 +28,26 @@ export default function SampleDesignDetailPage() {
   const effectiveRole = user?.staffRole || user?.role || '';
   const canWrite = can(effectiveRole as any, 'production.sampleDesigns');
   const canApprove = can(effectiveRole as any, 'production.designs.approve');
+  // Correct write gate for the NEW photo-edit section below — matches
+  // sampleDesignUpdate's own SAMPLE_WRITERS server gate exactly (admin/
+  // owner/designer). `canWrite` above is the broader view permission
+  // (pre-existing on this page's Submit button; left as-is, out of scope).
+  const canEditSample = can(effectiveRole as any, 'production.sampleDesigns.write');
+
+  // Photo edit form (DRAFT only — matches sampleDesignUpdate's own precondition)
+  const [editImage, setEditImage] = useState('');
+  const [editImagePath, setEditImagePath] = useState<string | null>(null);
 
   const loadSample = useCallback(async () => {
     if (!id) return;
     try {
       const snap = await getDoc(doc(db, 'sampleDesigns', id));
-      if (snap.exists()) setSample(snap.data() as SampleDesignDoc);
+      if (snap.exists()) {
+        const s = snap.data() as SampleDesignDoc;
+        setSample(s);
+        setEditImage(s.image || '');
+        setEditImagePath(s.imagePath || null);
+      }
     } catch (err) {
       console.error('Failed to load sample design:', err);
     } finally {
@@ -134,6 +149,29 @@ export default function SampleDesignDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Photo (DRAFT only — same precondition sampleDesignUpdate enforces server-side) */}
+      {sample.status === 'DRAFT' && canEditSample && (
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 mb-6">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4">Swatch Photo</h2>
+          <PhotoUploadField
+            storagePathPrefix="production/sampleDesigns"
+            uid={user?.id || ''}
+            value={editImage}
+            imagePath={editImagePath}
+            onChange={(url, path) => { setEditImage(url); setEditImagePath(path); }}
+            label="Swatch Photo (optional)"
+          />
+          <button
+            disabled={acting || (editImage === (sample.image || '') && editImagePath === (sample.imagePath || null))}
+            onClick={() => callFn('sampleDesignUpdate', { id: sample.id, image: editImage.trim(), imagePath: editImagePath || undefined })}
+            className="mt-4 flex items-center gap-2 px-4 py-2 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+          >
+            {acting ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save Photo
+          </button>
+        </div>
+      )}
 
       {/* Details */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">

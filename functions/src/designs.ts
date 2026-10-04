@@ -47,7 +47,7 @@ function txAudit(
 
 /* ═══════════════════════════════════════════════════════════════════
  * designCreate — create a new catalogue design (DRAFT).
- * Input : { name, description?, image?, images? }
+ * Input : { name, description?, image?, imagePath?, images? }
  * Output: { ok, id, design }
  * ═══════════════════════════════════════════════════════════════════ */
 export const designCreate = onCall(async (request) => {
@@ -57,8 +57,8 @@ export const designCreate = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Designer/Admin/Owner access required.");
   }
 
-  const { name, description, image, images } = (request.data || {}) as {
-    name?: string; description?: string; image?: string; images?: string[];
+  const { name, description, image, imagePath, images } = (request.data || {}) as {
+    name?: string; description?: string; image?: string; imagePath?: string; images?: string[];
   };
   if (!name || !String(name).trim()) {
     throw new HttpsError("invalid-argument", "Design name is required.");
@@ -72,6 +72,10 @@ export const designCreate = onCall(async (request) => {
     name: String(name).trim(),
     description: String(description ?? ""),
     image: String(image ?? ""),
+    // Storage path backing `image` when it came from an upload (Design
+    // Create's camera/gallery picker) rather than a pasted URL — audit
+    // trail only, same optional-field pattern as PieceDoc.garmentImagePath.
+    imagePath: imagePath || null,
     images: Array.isArray(images) ? images.map(String) : [],
     status: "DRAFT",
     currentVersion: 1,
@@ -96,7 +100,7 @@ export const designCreate = onCall(async (request) => {
 
 /* ═══════════════════════════════════════════════════════════════════
  * designUpdate — edit a DRAFT catalogue design.
- * Input : { id, name?, description?, image?, images? }
+ * Input : { id, name?, description?, image?, imagePath?, images? }
  * Output: { ok, id }
  * ═══════════════════════════════════════════════════════════════════ */
 export const designUpdate = onCall(async (request) => {
@@ -106,8 +110,8 @@ export const designUpdate = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Designer/Admin/Owner access required.");
   }
 
-  const { id, name, description, image, images } = (request.data || {}) as {
-    id?: string; name?: string; description?: string; image?: string; images?: string[];
+  const { id, name, description, image, imagePath, images } = (request.data || {}) as {
+    id?: string; name?: string; description?: string; image?: string; imagePath?: string; images?: string[];
   };
   if (!id) throw new HttpsError("invalid-argument", "Design id required.");
 
@@ -127,7 +131,13 @@ export const designUpdate = onCall(async (request) => {
       patch.name = String(name).trim();
     }
     if (description !== undefined) patch.description = String(description);
-    if (image !== undefined) patch.image = String(image);
+    if (image !== undefined) {
+      patch.image = String(image);
+      // A freshly uploaded photo always carries its own imagePath; a
+      // manually pasted/cleared URL has none — mirrors tailorCompleteStitching's
+      // garmentImageUrl/garmentImagePath pairing (functions/src/tailor.ts).
+      patch.imagePath = imagePath || null;
+    }
     if (images !== undefined) {
       if (!Array.isArray(images)) throw new HttpsError("invalid-argument", "images must be an array.");
       patch.images = images.map(String);

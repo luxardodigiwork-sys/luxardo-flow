@@ -6,6 +6,7 @@ import { httpsCallable } from 'firebase/functions';
 import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
 import { ArrowLeft, Loader2, Check, Clock, User, Camera, Shirt } from 'lucide-react';
+import PhotoUploadField from '../../components/production/PhotoUploadField';
 import type { SamplePieceDoc } from '../../types/production';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -25,6 +26,7 @@ export default function SamplePieceDetailPage() {
 
   // Completion form
   const [image, setImage] = useState('');
+  const [imagePath, setImagePath] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
 
   const effectiveRole = user?.staffRole || user?.role || '';
@@ -39,6 +41,7 @@ export default function SamplePieceDetailPage() {
         const p = snap.data() as SamplePieceDoc;
         setPiece(p);
         setImage(p.image || '');
+        setImagePath(p.imagePath || null);
         setNotes(p.notes || '');
       }
     } catch (err) {
@@ -122,15 +125,14 @@ export default function SamplePieceDetailPage() {
           <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4">Mark Garment Complete</h2>
           <div className="space-y-4">
             <div>
-              <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
-                Completed Garment Photo * <span className="text-red-500">(required)</span>
-              </label>
-              <input
-                type="url"
+              <PhotoUploadField
+                storagePathPrefix="production/samplePieces"
+                uid={user?.id || ''}
                 value={image}
-                onChange={e => setImage(e.target.value)}
-                placeholder="https://…"
-                className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all"
+                imagePath={imagePath}
+                onChange={(url, path) => { setImage(url); setImagePath(path); }}
+                label="Completed Garment Photo"
+                required
               />
             </div>
             <div>
@@ -140,7 +142,7 @@ export default function SamplePieceDetailPage() {
             </div>
             <button
               disabled={acting || !image.trim()}
-              onClick={() => callFn('samplePieceComplete', { id: piece.id, image: image.trim(), notes: notes.trim() || undefined })}
+              onClick={() => callFn('samplePieceComplete', { id: piece.id, image: image.trim(), imagePath: imagePath || undefined, notes: notes.trim() || undefined })}
               className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
             >
               {acting ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}

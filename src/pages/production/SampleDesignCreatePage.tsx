@@ -4,16 +4,20 @@ import { httpsCallable } from 'firebase/functions';
 import { functions, db } from '../../firebase';
 import { collection, getDocs, query, orderBy, where } from 'firebase/firestore';
 import { ArrowLeft, Loader2, Plus, X } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import PhotoUploadField from '../../components/production/PhotoUploadField';
 import type { DesignDoc } from '../../types/production';
 
 export default function SampleDesignCreatePage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [image, setImage] = useState('');
+  const [imagePath, setImagePath] = useState<string | null>(null);
   const [catalogDesignId, setCatalogDesignId] = useState('');
   const [designVersionId, setDesignVersionId] = useState('');
 
@@ -46,6 +50,7 @@ export default function SampleDesignCreatePage() {
         name: name.trim(),
         description: description.trim() || undefined,
         image: image.trim() || undefined,
+        imagePath: imagePath || undefined,
         catalogDesignId: catalogDesignId || undefined,
         designVersionId: designVersionId || undefined,
       });
@@ -106,10 +111,14 @@ export default function SampleDesignCreatePage() {
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Image URL (optional)</label>
-          <input type="url" value={image} onChange={e => setImage(e.target.value)}
-            placeholder="https://..."
-            className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+          <PhotoUploadField
+            storagePathPrefix="production/sampleDesigns"
+            uid={user?.id || ''}
+            value={image}
+            imagePath={imagePath}
+            onChange={(url, path) => { setImage(url); setImagePath(path); }}
+            label="Swatch Photo (optional)"
+          />
         </div>
 
         <div className="flex justify-end gap-3 pt-2">

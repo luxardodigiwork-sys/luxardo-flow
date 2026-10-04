@@ -7,8 +7,9 @@ import { useAuth } from '../../context/AuthContext';
 import { can } from '../../utils/rolePermissions';
 import {
   ArrowLeft, Loader2, Lock, Unlock, Send, Check, Tag, Plus,
-  Clock, User, FileText
+  Clock, User, FileText, Save
 } from 'lucide-react';
+import PhotoUploadField from '../../components/production/PhotoUploadField';
 import type { DesignDoc, DesignVersionDoc } from '../../types/production';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -32,6 +33,10 @@ export default function DesignDetailPage() {
   const [catalogueShortName, setCatalogueShortName] = useState('');
   const [designNumber, setDesignNumber] = useState('');
 
+  // Photo edit form (DRAFT only — matches designUpdate's own precondition)
+  const [editImage, setEditImage] = useState('');
+  const [editImagePath, setEditImagePath] = useState<string | null>(null);
+
   const effectiveRole = user?.staffRole || user?.role || '';
   const canWrite = can(effectiveRole as any, 'production.designs.write');
   const canApprove = can(effectiveRole as any, 'production.designs.approve');
@@ -45,6 +50,8 @@ export default function DesignDetailPage() {
         setDesign(d);
         setCatalogueShortName(d.catalogueShortName || '');
         setDesignNumber(d.designNumber || '');
+        setEditImage(d.image || '');
+        setEditImagePath(d.imagePath || null);
 
         // Load versions
         const vq = query(
@@ -171,6 +178,29 @@ export default function DesignDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Photo (DRAFT only — same precondition designUpdate enforces server-side) */}
+      {design.status === 'DRAFT' && canWrite && (
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 mb-6">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4">Design Photo</h2>
+          <PhotoUploadField
+            storagePathPrefix="production/designs"
+            uid={user?.id || ''}
+            value={editImage}
+            imagePath={editImagePath}
+            onChange={(url, path) => { setEditImage(url); setEditImagePath(path); }}
+            label="Design Photo (optional)"
+          />
+          <button
+            disabled={acting || (editImage === (design.image || '') && editImagePath === (design.imagePath || null))}
+            onClick={() => callFn('designUpdate', { id: design.id, image: editImage.trim(), imagePath: editImagePath || undefined })}
+            className="mt-4 flex items-center gap-2 px-4 py-2 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+          >
+            {acting ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save Photo
+          </button>
+        </div>
+      )}
 
       {/* Catalogue Meta (only for frozen/approved) */}
       {design.isFrozen && (
