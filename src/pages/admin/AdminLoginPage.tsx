@@ -193,13 +193,21 @@ export default function AdminLoginPage() {
       const submitEmail = email.trim().toLowerCase();
       const cred = await signInWithEmailAndPassword(auth, submitEmail, password);
 
-      // Verify role in firestore
-      const kind = await verifyAdminRole(cred.user.uid);
+      // Verify role (throws + signs back out on any ineligible case). Does
+      // NOT navigate here — see the useEffect above. Calling navigate()
+      // immediately after this resolves races AuthContext's own setUser()
+      // commit: this function's `await` is driven by a separate resolution
+      // channel (waitForResolution) that can settle before React has
+      // actually re-rendered with the new `user`, so a route mounted by an
+      // imperative navigate() here could still see the OLD (pre-login)
+      // user and bounce to the wrong page. The useEffect fires only after
+      // `user` has genuinely updated in React state, so it can't race.
+      await verifyAdminRole(cred.user.uid);
 
-      // Success -> Clear lock
+      // Success -> Clear lock. Navigation happens via the useEffect above
+      // once `user` updates.
       localStorage.removeItem('admin_attempts');
       localStorage.removeItem('admin_lock');
-      navigate(isLoomHost() ? '/production' : (kind === 'admin' ? from : (fromPath || '/production')), { replace: true });
 
     } catch (err: any) {
       // 🚀 FIX: Ab HAR error par strike count hoga (Password galat ho ya Database Role missing ho)
@@ -228,11 +236,12 @@ export default function AdminLoginPage() {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
       const cred = await signInWithPopup(auth, provider);
-      const kind = await verifyAdminRole(cred.user.uid);
+      // Validates + throws on failure; does NOT navigate — see handleEmailLogin's
+      // comment above and the useEffect above for why.
+      await verifyAdminRole(cred.user.uid);
 
       localStorage.removeItem('admin_attempts');
       localStorage.removeItem('admin_lock');
-      navigate(isLoomHost() ? '/production' : (kind === 'admin' ? from : (fromPath || '/production')), { replace: true });
     } catch (err: any) {
       recordLocalFailure();
       if (err?.message && (err.message.includes('Admin record not found') || err.message.includes('Access denied') || err.message.includes('Backend Gateway'))) {
@@ -268,11 +277,12 @@ export default function AdminLoginPage() {
       const { token } = result.data as { token: string };
 
       const cred = await signInWithCustomToken(auth, token);
-      const kind = await verifyAdminRole(cred.user.uid);
+      // Validates + throws on failure; does NOT navigate — see handleEmailLogin's
+      // comment above and the useEffect above for why.
+      await verifyAdminRole(cred.user.uid);
 
       localStorage.removeItem('admin_attempts');
       localStorage.removeItem('admin_lock');
-      navigate(isLoomHost() ? '/production' : (kind === 'admin' ? from : (fromPath || '/production')), { replace: true });
     } catch (err: any) {
       // The server already returns one fixed, generic message for every
       // failure reason (unknown number, wrong tier, inactive, wrong

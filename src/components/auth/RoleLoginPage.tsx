@@ -304,10 +304,17 @@ export default function RoleLoginPage({
       }
       const submitEmail = email.trim().toLowerCase();
       const cred = await signInWithEmailAndPassword(auth, submitEmail, password);
+      // Validates + throws on failure; does NOT navigate here. Calling
+      // navigate() immediately after this resolves races AuthContext's own
+      // setUser() commit — verifyRole()'s await is driven by a separate
+      // resolution channel (waitForResolution) that can settle before React
+      // has re-rendered with the new `user`, so a route mounted right here
+      // could still see the OLD (pre-login) user. The useEffect above only
+      // fires once `user` has genuinely updated in React state, so it can't
+      // race — same fix as AdminLoginPage.tsx's equivalent handlers.
       await verifyRole(cred.user.uid);
       localStorage.removeItem(attemptsKey);
       localStorage.removeItem(lockKey);
-      navigate(successTarget, { replace: true });
     } catch (err: any) {
       recordLocalFailure();
       setError(err?.code ? errMsg(err.code) : (err?.message || 'Authentication failed.'));
@@ -328,10 +335,11 @@ export default function RoleLoginPage({
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
       const cred = await signInWithPopup(auth, provider);
+      // Validates + throws on failure; does NOT navigate — see
+      // handleEmailLogin's comment above and the useEffect above for why.
       await verifyRole(cred.user.uid);
       localStorage.removeItem(attemptsKey);
       localStorage.removeItem(lockKey);
-      navigate(successTarget, { replace: true });
     } catch (err: any) {
       recordLocalFailure();
       setError(err?.code ? errMsg(err.code) : (err?.message || 'Google sign-in failed.'));
