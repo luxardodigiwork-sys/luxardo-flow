@@ -98,6 +98,9 @@ import StaffManagementPage from "./pages/production/StaffManagementPage";
 import UserProfilePage from "./pages/production/UserProfilePage";
 import KarigarListPage from "./pages/production/KarigarListPage";
 import KarigarCreatePage from "./pages/production/KarigarCreatePage";
+import FabricListPage from "./pages/production/FabricListPage";
+import FabricCreatePage from "./pages/production/FabricCreatePage";
+import FabricDetailPage from "./pages/production/FabricDetailPage";
 // Phase 2 — Design → Sample Design → Sample Piece → Production Request
 import DesignListPage from "./pages/production/DesignListPage";
 import DesignCreatePage from "./pages/production/DesignCreatePage";
@@ -170,6 +173,9 @@ function ProductionRoutes() {
         <Route path="profile/:uid" element={<UserProfilePage />} />
         <Route path="karigars" element={<KarigarListPage />} />
         <Route path="karigars/new" element={<KarigarCreatePage />} />
+        <Route path="fabric" element={<FabricListPage />} />
+        <Route path="fabric/new" element={<FabricCreatePage />} />
+        <Route path="fabric/:id" element={<FabricDetailPage />} />
         {/* Phase 2 — Design chain */}
         <Route path="designs" element={<DesignListPage />} />
         <Route path="designs/new" element={<DesignCreatePage />} />

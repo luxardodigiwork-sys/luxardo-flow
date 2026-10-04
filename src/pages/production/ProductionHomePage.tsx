@@ -270,6 +270,18 @@ export default function ProductionHomePage() {
                   </div>
                 </a>
               )}
+              {can(effectiveRole, 'production.fabric') && (
+                <a
+                  href="/production/fabric"
+                  className="flex items-center gap-3 p-4 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors"
+                >
+                  <Layers size={18} className="text-gray-400" />
+                  <div>
+                    <p className="text-sm font-medium text-black">Fabric Inventory</p>
+                    <p className="text-[10px] text-gray-400 uppercase tracking-widest">FM-XXXX · stock &amp; ledger</p>
+                  </div>
+                </a>
+              )}
               {canReadPrs && (
                 <a
                   href="/production/requests"

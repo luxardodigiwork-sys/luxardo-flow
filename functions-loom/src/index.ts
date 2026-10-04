@@ -114,3 +114,13 @@ export {
   approveTailorRequest,
   rejectTailorRequest,
 } from "../../functions/src/tailorRequests";
+
+/* Fabric Inventory V1 — master CRUD + stock receipt/issue ledger.
+ * FLOW-only: deliberately never exported from functions/src/index.ts (the
+ * B2C-deployed bundle) — production inventory has no B2C counterpart. */
+export {
+  fabricMasterCreate,
+  fabricMasterUpdate,
+  fabricStockReceive,
+  fabricStockIssue,
+} from "../../functions/src/fabric";

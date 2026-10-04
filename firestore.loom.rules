@@ -146,6 +146,27 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ── Fabric Inventory V1 (master + stock receipt/issue/ledger) ────
+     * All writes via Cloud Functions (fabricMasterCreate / Update /
+     * fabricStockReceive / fabricStockIssue). Clients are read-only.
+     */
+    match /fabricMasters/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm','dispatch']);
+      allow create, update, delete: if false;
+    }
+    match /fabricReceipts/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm']);
+      allow create, update, delete: if false;
+    }
+    match /fabricIssues/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm','dispatch']);
+      allow create, update, delete: if false;
+    }
+    match /fabricLedger/{id} {
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm']);
+      allow create, update, delete: if false;
+    }
+
     /* ── Replacement Links ──────────────────────────────────────────── */
     match /replacementLinks/{id} {
       allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm']);

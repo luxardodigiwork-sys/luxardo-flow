@@ -64,6 +64,8 @@ type Module =
   | 'production.pieces.assignKarigar'
   | 'production.karigars'
   | 'production.karigars.write'
+  | 'production.fabric'
+  | 'production.fabric.write'
   | 'production.labour'
   | 'production.labour.startStop'
   | 'production.qc'
@@ -137,6 +139,11 @@ const MATRIX: Record<Module, Role[]> = {
   'production.pieces.assignKarigar': ['super_admin','admin','owner','pm'],
   'production.karigars':             ['super_admin','admin','owner','pm','dispatch'],
   'production.karigars.write':       ['super_admin','admin','owner','pm'],
+  // Fabric Inventory V1 — view mirrors the Karigar registry precedent
+  // exactly; write (master CRUD + stock receipt/issue) is PM/Admin/Owner,
+  // matching functions/src/fabric.ts's FABRIC_MANAGERS server-side gate.
+  'production.fabric':               ['super_admin','admin','owner','pm','dispatch'],
+  'production.fabric.write':         ['super_admin','admin','owner','pm'],
   'production.labour':               ['super_admin','admin','owner','pm','dispatch'],
   'production.labour.startStop':     ['super_admin','admin','owner','pm'],
   'production.qc':                   ['super_admin','admin','owner','pm','dispatch','guard'],

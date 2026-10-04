@@ -144,6 +144,14 @@
         { "fieldPath": "assignedTailorUid", "order": "ASCENDING" },
         { "fieldPath": "stage", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "fabricLedger",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fabricId", "order": "ASCENDING" },
+        { "fieldPath": "at", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

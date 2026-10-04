@@ -107,6 +107,9 @@ function writeAudit(
  *   Store-Out Issue   SOI-XXXX
  *   Guard QC Record   QC-XXXX
  *   Work Session      LS-XXXX
+ *   Fabric Master     FM-XXXX
+ *   Fabric Receipt    FR-XXXX
+ *   Fabric Issue      FI-XXXX
  *
  * IDs are NEVER reused after deletion/closure (monotonic counter).
  * ═══════════════════════════════════════════════════════════════════ */
@@ -124,6 +127,9 @@ const ID_PREFIXES: Record<string, string> = {
   tailorSession:    "TS-",
   labourSession:    "LS-",
   tailorRequest:    "TR-",
+  fabricMaster:     "FM-",
+  fabricReceipt:    "FR-",
+  fabricIssue:      "FI-",
 };
 
 /**

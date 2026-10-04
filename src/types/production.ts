@@ -751,12 +751,19 @@ export interface IdCounterDoc {
   updatedAt: string;
 }
 
-/* ────────────────────────── FABRIC TYPES ───────────────────────── */
+/* ────────────────────────── FABRIC INVENTORY V1 ───────────────────────── *
+ * Production-scoped inventory, not an enterprise warehouse system. Stock
+ * lives on fabricMasters.stockQtyMeters and ONLY ever moves via
+ * fabricStockReceive / fabricStockIssue (functions/src/fabric.ts) — never
+ * editable through fabricMasterUpdate. Every receipt/issue appends one
+ * fabricLedger entry (append-only, carries the resulting balance), mirroring
+ * the pieceMovementHistory pattern for pieces.
+ * ────────────────────────────────────────────────────────────────────── */
 
 /**
  * Collection: fabricMasters
- * ID: FM-XXXX (to be determined)
- * Master data for fabric types used in production.
+ * ID: FM-XXXX
+ * Master data + live stock for a fabric type.
  */
 export interface FabricMasterDoc {
   id: string;
@@ -765,8 +772,11 @@ export interface FabricMasterDoc {
   colour: string;
   colourCode: string;
   notes: string;
+  unit: 'meters';
+  stockQtyMeters: number;
   active: boolean;
   createdBy: string;
+  createdByName: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -775,6 +785,7 @@ export interface FabricMasterDoc {
  * Collection: designVersionFabricGuides
  * ID: {designVersionId}-fabric-guide
  * Link between a design version and its fabric requirements.
+ * NOT part of Fabric Inventory V1 — reserved for a future phase.
  */
 export interface DesignVersionFabricGuideDoc {
   fabricId: string;
@@ -782,16 +793,58 @@ export interface DesignVersionFabricGuideDoc {
 }
 
 /**
+ * Collection: fabricReceipts
+ * ID: FR-XXXX
+ * One append-only record per stock-in event.
+ */
+export interface FabricReceiptDoc {
+  id: string;
+  fabricId: string;
+  qtyMeters: number;
+  supplier: string | null;
+  notes: string;
+  balanceAfterMeters: number;
+  receivedBy: string;
+  receivedByName: string;
+  receivedAt: string;
+  createdAt: string;
+}
+
+/**
  * Collection: fabricIssues
- * ID: FI-XXXX (to be determined)
- * Tracks fabric consumption for each production request.
- * ONE Fabric Issue = EXACTLY ONE Production Request + EXACTLY ONE Design.
+ * ID: FI-XXXX
+ * One append-only record per stock-out-to-a-Production-Request event.
  */
 export interface FabricIssueDoc {
   id: string;
-  prId: string;
-  designId: string;
-  designVersionId: string;
   fabricId: string;
-  requiredQtyMeters: number;
+  prId: string;
+  qtyMeters: number;
+  reason: string;
+  balanceAfterMeters: number;
+  issuedBy: string;
+  issuedByName: string;
+  issuedAt: string;
+  createdAt: string;
+}
+
+/**
+ * Collection: fabricLedger
+ * ID: random (crypto.randomUUID(), matching pieceMovementHistory's style)
+ * The single, append-only, combined running ledger for a fabric's stock.
+ */
+export interface FabricLedgerEntryDoc {
+  id: string;
+  fabricId: string;
+  type: 'RECEIPT' | 'ISSUE';
+  qtyMeters: number;
+  balanceAfterMeters: number;
+  relatedReceiptId: string | null;
+  relatedIssueId: string | null;
+  relatedPrId: string | null;
+  actorUid: string;
+  actorName: string;
+  actorRole: string;
+  at: string;
+  reason: string | null;
 }
