@@ -96,6 +96,7 @@ import ProductionLayout from "./components/production/ProductionLayout";
 import ProductionHomePage from "./pages/production/ProductionHomePage";
 import StaffManagementPage from "./pages/production/StaffManagementPage";
 import UserProfilePage from "./pages/production/UserProfilePage";
+import SettingsPage from "./pages/production/SettingsPage";
 import KarigarListPage from "./pages/production/KarigarListPage";
 import KarigarCreatePage from "./pages/production/KarigarCreatePage";
 import FabricListPage from "./pages/production/FabricListPage";
@@ -171,6 +172,7 @@ function ProductionRoutes() {
         <Route path="staff" element={<StaffManagementPage />} />
         <Route path="profile" element={<UserProfilePage />} />
         <Route path="profile/:uid" element={<UserProfilePage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="karigars" element={<KarigarListPage />} />
         <Route path="karigars/new" element={<KarigarCreatePage />} />
         <Route path="fabric" element={<FabricListPage />} />

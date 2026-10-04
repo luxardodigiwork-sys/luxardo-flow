@@ -9,6 +9,7 @@ import {
   signOut,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithCustomToken,
   RecaptchaVerifier,
   signInWithPhoneNumber,
   ConfirmationResult,
@@ -18,6 +19,8 @@ import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { normalizeStaffRole, isCanonicalStaffRole, isPrivilegedEmail, isEligibleLoomIdentity, isEligibleForMobileRecovery } from '../../utils/loomIdentity';
 import { isValidE164, toE164 } from '../../utils/phone';
+import PhoneInput from 'react-phone-input-2';
+import 'react-phone-input-2/lib/style.css';
 
 const MAX_FAILED_ATTEMPTS = 3;
 const LOCKOUT_DURATION_MINUTES = 15;
@@ -69,6 +72,18 @@ export default function RoleLoginPage({
   const [loading, setLoading] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [lockTimer, setLockTimer] = useState<number>(0);
+
+  // ── V1 Auth Stabilization: Mobile Number + Password LOGIN (common/
+  // LUXARDO FLOW only) — a third, parallel credential-based login method
+  // alongside Email+Password, mirroring AdminLoginPage.tsx's existing
+  // privileged-tier tab exactly, but calling staffMobilePasswordLogin
+  // (functions/src/privilegedAuth.ts) — the SAME mechanism, scoped to the
+  // 8 operational roles. NOT an OTP flow; do not confuse with the mobile-OTP
+  // password RECOVERY flow below.
+  const [authTab, setAuthTab] = useState<'password' | 'mobile'>('password');
+  const [mobilePhone, setMobilePhone] = useState('');
+  const [mobilePassword, setMobilePassword] = useState('');
+  const [mobileShowPwd, setMobileShowPwd] = useState(false);
 
   // ── LUXARDO FLOW (common) only: mobile-number sign-in + mobile-OTP
   // password recovery. Firebase's native phone auth already resolves to the
@@ -348,6 +363,44 @@ export default function RoleLoginPage({
     }
   };
 
+  // ── V1 Auth Stabilization: Mobile Number + Password LOGIN ───────────────
+  // Server (staffMobilePasswordLogin) resolves phone -> uid, checks
+  // staff/{uid} is an ACTIVE operational role, verifies the password via
+  // Identity Toolkit, then returns a Firebase custom token for that SAME
+  // uid — signInWithCustomToken() below establishes an ordinary Firebase
+  // Auth session, so verifyRole() and every downstream check run completely
+  // unchanged, exactly as after Email+Password. Common/LUXARDO FLOW only.
+  const handleMobilePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setOkMsg('');
+    setLoading(true);
+    try {
+      if (checkLocalLock()) {
+        setLoading(false);
+        return;
+      }
+      const loginFn = httpsCallable(functions, 'staffMobilePasswordLogin');
+      const result = await loginFn({ phoneNumber: '+' + mobilePhone, password: mobilePassword });
+      const { token } = result.data as { token: string };
+
+      const cred = await signInWithCustomToken(auth, token);
+      // Validates + throws on failure; does NOT navigate — see
+      // handleEmailLogin's comment above and the useEffect above for why.
+      await verifyRole(cred.user.uid);
+      localStorage.removeItem(attemptsKey);
+      localStorage.removeItem(lockKey);
+    } catch (err: any) {
+      // The server already returns one fixed, generic message for every
+      // failure reason (unknown number, wrong tier, inactive, wrong
+      // password, rate-limited) — never distinguish further here.
+      recordLocalFailure();
+      setError(err?.message || 'Invalid mobile number or password.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ── Mobile-OTP password recovery (common/LUXARDO FLOW only) ─────────────
   //
   // STEP 2-4: identify the User by email, resolve the AUTHORITATIVE stored
@@ -596,7 +649,27 @@ export default function RoleLoginPage({
                 </>
               )}
 
-              <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
+              {common && (
+                <div className="flex mb-6 border border-gray-200 rounded-lg p-1 bg-gray-50">
+                  <button
+                    type="button"
+                    onClick={() => { setAuthTab('password'); setError(''); }}
+                    className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${authTab === 'password' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                  >
+                    Email &amp; Password
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthTab('mobile'); setError(''); }}
+                    className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${authTab === 'mobile' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                  >
+                    Mobile Number
+                  </button>
+                </div>
+              )}
+
+              {(!common || authTab === 'password') && (
+                <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
                   <input type="text" style={{ display: 'none' }} />
                   <input type="password" style={{ display: 'none' }} />
 
@@ -648,6 +721,46 @@ export default function RoleLoginPage({
                     )}
                   </div>
                 </form>
+              )}
+
+              {common && authTab === 'mobile' && (
+                <form onSubmit={handleMobilePasswordLogin} className="space-y-4" autoComplete="off">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 mb-2 block">Mobile Number</label>
+                    <PhoneInput
+                      country={'in'}
+                      value={mobilePhone}
+                      onChange={(phone) => setMobilePhone(phone)}
+                      enableSearch
+                      disableSearchIcon
+                      inputProps={{ name: 'phone', required: true }}
+                      containerClass="!w-full font-sans"
+                      inputClass="!w-full !h-[46px] !pl-14 !bg-white !border !border-gray-300 focus:!border-black transition-colors !rounded-lg !text-sm"
+                      buttonClass="!bg-white !border-0 !border-r !border-gray-300 !rounded-l-lg hover:!bg-gray-50"
+                      dropdownClass="!shadow-2xl !border !border-gray-200 !rounded-xl text-sm !max-h-56 !overflow-y-auto"
+                    />
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input type={mobileShowPwd ? 'text' : 'password'} value={mobilePassword} onChange={(e) => setMobilePassword(e.target.value)} placeholder="Password" className="w-full border border-gray-300 rounded-lg pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="new-password" />
+                    <button type="button" onClick={() => setMobileShowPwd(!mobileShowPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
+                      {mobileShowPwd ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <button type="submit" disabled={loading || isLocked} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 mt-2 shadow-md disabled:opacity-50">
+                    {loading ? 'Verifying...' : 'Sign In'} <Phone size={14} />
+                  </button>
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { resetPhoneFlowState(); setMode('reset'); }}
+                      className="text-xs text-gray-500 hover:text-black tracking-wider"
+                    >
+                      Forgot password? Reset via mobile OTP
+                    </button>
+                  </div>
+                </form>
+              )}
             </>
           )}
 

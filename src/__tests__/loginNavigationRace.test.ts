@@ -106,7 +106,7 @@ function extractHandlerBody(source: string, handlerName: string): string {
   const path = join(__dirname, '..', 'components', 'auth', 'RoleLoginPage.tsx');
   const source = readFileSync(path, 'utf8');
 
-  for (const handler of ['handleEmailLogin', 'handleGoogleLogin']) {
+  for (const handler of ['handleEmailLogin', 'handleGoogleLogin', 'handleMobilePasswordLogin']) {
     const body = extractHandlerBody(source, handler);
     check(
       `RoleLoginPage.${handler}: no longer calls navigate() on its success path`,

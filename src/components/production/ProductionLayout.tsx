@@ -11,11 +11,22 @@ import { useScrollLock } from '../../utils/useScrollLock';
 import { AnimatePresence, motion } from 'framer-motion';
 import FlowLogo from '../FlowLogo';
 import GuideTour from './GuideTour';
+import { ThemeProvider, useTheme } from '../../context/ThemeContext';
 
 export default function ProductionLayout() {
+  return (
+    <ThemeProvider>
+      <ProductionLayoutContent />
+    </ThemeProvider>
+  );
+}
+
+function ProductionLayoutContent() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [tourReplaySignal, setTourReplaySignal] = useState(0);
   useScrollLock(isMobileMenuOpen);
@@ -29,6 +40,10 @@ export default function ProductionLayout() {
       title: 'Overview',
       items: [
         { path: '/production', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','super_admin','owner','pm','designer','dispatch','guard','tailor','store','accounts','analysis'] },
+        // Every authenticated Flow role gets Settings — no can() gate; it is
+        // the User's own account (profile/password/theme/sign-out), never a
+        // business-data permission.
+        { path: '/production/settings', label: 'Settings', icon: Settings, roles: ['admin','super_admin','owner','pm','designer','dispatch','guard','tailor','store','accounts','analysis'] },
       ],
     },
     {
@@ -99,10 +114,10 @@ export default function ProductionLayout() {
   };
 
   return (
-    <div className="h-screen bg-gray-50 flex font-sans text-black selection:bg-black selection:text-white overflow-hidden">
+    <div className={`h-screen flex font-sans selection:bg-black selection:text-white overflow-hidden ${isDark ? 'bg-gray-950 text-white' : 'bg-gray-50 text-black'}`}>
       {/* ── Desktop Sidebar ── */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20">
-        <div className="p-8 border-b border-gray-100 flex flex-col justify-center min-h-[100px] shrink-0">
+      <aside className={`w-64 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20 border-r ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+        <div className={`p-8 border-b flex flex-col justify-center min-h-[100px] shrink-0 ${isDark ? 'border-gray-800' : 'border-gray-100'}`}>
           <FlowLogo size="md" />
           {/* Persistent role identity (V1 Stabilization Step 2) — sourced
               from the same authenticated staff identity every nav item
@@ -111,7 +126,7 @@ export default function ProductionLayout() {
           <span className="inline-flex self-start items-center mt-3 px-2.5 py-1 bg-black text-white text-[11px] font-bold uppercase tracking-widest rounded-md">
             {roleBadgeLabel(effectiveRole)}
           </span>
-          <p className="text-[10px] text-gray-400 uppercase tracking-widest mt-2 font-bold">Loom · Production</p>
+          <p className={`text-[10px] uppercase tracking-widest mt-2 font-bold ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Loom · Production</p>
         </div>
 
         {/* Its own independent vertical scroll container: min-h-0 overrides
@@ -122,7 +137,7 @@ export default function ProductionLayout() {
         <nav className="flex-1 min-h-0 px-4 py-8 space-y-8 overflow-y-auto scrollbar-hide">
           {filteredGroups.map(group => (
             <div key={group.title} className="space-y-3">
-              <h3 className="text-[9px] uppercase tracking-[0.2em] font-bold text-gray-400 px-4 select-none">
+              <h3 className={`text-[9px] uppercase tracking-[0.2em] font-bold px-4 select-none ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                 {group.title}
               </h3>
               <div className="space-y-1">
@@ -138,10 +153,10 @@ export default function ProductionLayout() {
                       className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-all duration-200 rounded-lg group ${
                         isActive
                           ? 'bg-black text-white font-medium shadow-sm'
-                          : 'text-gray-500 hover:bg-gray-50 hover:text-black'
+                          : isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'
                       }`}
                     >
-                      <item.icon size={16} className={`${isActive ? 'text-white' : 'text-gray-400 group-hover:text-black'} transition-colors`} />
+                      <item.icon size={16} className={`${isActive ? 'text-white' : isDark ? 'text-gray-500 group-hover:text-white' : 'text-gray-400 group-hover:text-black'} transition-colors`} />
                       <span className="tracking-wide">{item.label}</span>
                     </Link>
                   );
@@ -151,25 +166,25 @@ export default function ProductionLayout() {
           ))}
         </nav>
 
-        <div className="p-4 border-t border-gray-100 bg-white shrink-0">
+        <div className={`p-4 border-t shrink-0 ${isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'}`}>
           <Link
             to="/production/profile"
-            className="block px-4 pb-3 text-[9px] text-gray-400 uppercase tracking-widest font-bold truncate hover:text-black transition-colors"
+            className={`block px-4 pb-3 text-[9px] uppercase tracking-widest font-bold truncate transition-colors ${isDark ? 'text-gray-500 hover:text-white' : 'text-gray-400 hover:text-black'}`}
           >
             {user?.name} · {staffRole || user?.role}
           </Link>
           <button
             onClick={() => setTourReplaySignal(s => s + 1)}
-            className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg group"
+            className={`flex items-center gap-3 px-4 py-2.5 text-sm w-full text-left transition-all duration-200 rounded-lg group ${isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'}`}
           >
-            <HelpCircle size={16} className="text-gray-400 group-hover:text-black transition-colors" />
+            <HelpCircle size={16} className={`transition-colors ${isDark ? 'text-gray-500 group-hover:text-white' : 'text-gray-400 group-hover:text-black'}`} />
             <span className="tracking-wide">Guide Tour</span>
           </button>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg group"
+            className={`flex items-center gap-3 px-4 py-3 text-sm w-full text-left transition-all duration-200 rounded-lg group ${isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'}`}
           >
-            <LogOut size={16} className="text-gray-400 group-hover:text-black transition-colors" />
+            <LogOut size={16} className={`transition-colors ${isDark ? 'text-gray-500 group-hover:text-white' : 'text-gray-400 group-hover:text-black'}`} />
             <span className="tracking-wide">Sign Out</span>
           </button>
         </div>
@@ -191,17 +206,17 @@ export default function ProductionLayout() {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed inset-y-0 left-0 w-[280px] bg-white border-r border-gray-200 flex flex-col overflow-hidden z-50 md:hidden shadow-2xl"
+              className={`fixed inset-y-0 left-0 w-[280px] flex flex-col overflow-hidden z-50 md:hidden shadow-2xl border-r ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}
             >
-              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white shrink-0">
+              <div className={`p-6 border-b flex justify-between items-center shrink-0 ${isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'}`}>
                 <div>
                   <FlowLogo size="sm" />
                   <span className="inline-flex items-center mt-2 px-2 py-0.5 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded-md">
                     {roleBadgeLabel(effectiveRole)}
                   </span>
-                  <p className="text-[9px] text-gray-400 uppercase tracking-widest mt-1 font-bold">Loom · Production</p>
+                  <p className={`text-[9px] uppercase tracking-widest mt-1 font-bold ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Loom · Production</p>
                 </div>
-                <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-50 rounded-lg transition-colors">
+                <button onClick={() => setIsMobileMenuOpen(false)} className={`p-2 -mr-2 rounded-lg transition-colors ${isDark ? 'text-gray-500 hover:text-white hover:bg-gray-800' : 'text-gray-400 hover:text-black hover:bg-gray-50'}`}>
                   <X size={20} />
                 </button>
               </div>
@@ -211,7 +226,7 @@ export default function ProductionLayout() {
               <nav className="flex-1 min-h-0 px-4 py-6 space-y-8 overflow-y-auto scrollbar-hide">
                 {filteredGroups.map(group => (
                   <div key={group.title} className="space-y-2">
-                    <h3 className="text-[9px] uppercase tracking-[0.2em] font-bold text-gray-400 px-4">{group.title}</h3>
+                    <h3 className={`text-[9px] uppercase tracking-[0.2em] font-bold px-4 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{group.title}</h3>
                     <div className="space-y-1">
                       {group.items.map(item => {
                         const isActive = item.path === '/production'
@@ -226,10 +241,10 @@ export default function ProductionLayout() {
                             className={`flex items-center gap-3 px-4 py-3 text-sm transition-all duration-200 rounded-lg ${
                               isActive
                                 ? 'bg-black text-white font-medium'
-                                : 'text-gray-500 hover:bg-gray-50 hover:text-black'
+                                : isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'
                             }`}
                           >
-                            <item.icon size={18} className={isActive ? 'text-white' : 'text-gray-400'} />
+                            <item.icon size={18} className={isActive ? 'text-white' : isDark ? 'text-gray-500' : 'text-gray-400'} />
                             <span className="tracking-wide">{item.label}</span>
                           </Link>
                         );
@@ -239,27 +254,27 @@ export default function ProductionLayout() {
                 ))}
               </nav>
 
-              <div className="p-4 border-t border-gray-100 bg-white shrink-0">
+              <div className={`p-4 border-t shrink-0 ${isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'}`}>
                 <Link
                   to="/production/profile"
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg"
+                  className={`flex items-center gap-3 px-4 py-3 text-sm w-full text-left transition-all duration-200 rounded-lg ${isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'}`}
                 >
-                  <UserRound size={18} className="text-gray-400" />
+                  <UserRound size={18} className={isDark ? 'text-gray-500' : 'text-gray-400'} />
                   <span className="tracking-wide">My Profile</span>
                 </Link>
                 <button
                   onClick={() => setTourReplaySignal(s => s + 1)}
-                  className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg"
+                  className={`flex items-center gap-3 px-4 py-3 text-sm w-full text-left transition-all duration-200 rounded-lg ${isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'}`}
                 >
-                  <HelpCircle size={18} className="text-gray-400" />
+                  <HelpCircle size={18} className={isDark ? 'text-gray-500' : 'text-gray-400'} />
                   <span className="tracking-wide">Guide Tour</span>
                 </button>
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-3 px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 hover:text-black w-full text-left transition-all duration-200 rounded-lg"
+                  className={`flex items-center gap-3 px-4 py-3 text-sm w-full text-left transition-all duration-200 rounded-lg ${isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-black'}`}
                 >
-                  <LogOut size={18} className="text-gray-400" />
+                  <LogOut size={18} className={isDark ? 'text-gray-500' : 'text-gray-400'} />
                   <span className="tracking-wide">Sign Out</span>
                 </button>
               </div>
@@ -269,11 +284,11 @@ export default function ProductionLayout() {
       </AnimatePresence>
 
       {/* ── Main Content ── */}
-      <main className="flex-1 flex flex-col h-screen min-h-0 min-w-0 overflow-hidden bg-gray-50/50">
+      <main className={`flex-1 flex flex-col h-screen min-h-0 min-w-0 overflow-hidden ${isDark ? 'bg-gray-950' : 'bg-gray-50/50'}`}>
         {/* Mobile Header */}
-        <header className="md:hidden bg-white/80 backdrop-blur-md border-b border-gray-200 px-4 h-16 flex justify-between items-center shrink-0 z-30 shadow-sm">
+        <header className={`md:hidden backdrop-blur-md border-b px-4 h-16 flex justify-between items-center shrink-0 z-30 shadow-sm ${isDark ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'}`}>
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-black hover:bg-gray-100 rounded-lg transition-colors shrink-0">
+            <button onClick={() => setIsMobileMenuOpen(true)} className={`p-2 -ml-2 rounded-lg transition-colors shrink-0 ${isDark ? 'text-white hover:bg-gray-800' : 'text-black hover:bg-gray-100'}`}>
               <Menu size={20} />
             </button>
             {/* Persistent role identity, mobile — takes the slot the plain
@@ -285,7 +300,7 @@ export default function ProductionLayout() {
               {roleBadgeLabel(effectiveRole)}
             </span>
           </div>
-          <button onClick={handleLogout} className="p-2 -mr-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors shrink-0">
+          <button onClick={handleLogout} className={`p-2 -mr-2 rounded-lg transition-colors shrink-0 ${isDark ? 'text-gray-500 hover:text-white hover:bg-gray-800' : 'text-gray-400 hover:text-black hover:bg-gray-100'}`}>
             <LogOut size={18} />
           </button>
         </header>

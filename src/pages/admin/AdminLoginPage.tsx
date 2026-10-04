@@ -10,11 +10,14 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   signInWithCustomToken,
+  RecaptchaVerifier,
+  signInWithPhoneNumber,
+  ConfirmationResult,
 } from 'firebase/auth';
 import { auth, db, functions } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { normalizeStaffRole, isCanonicalStaffRole, isLoomHost, isEligibleForPrivilegedLoginPage } from '../../utils/loomIdentity';
+import { normalizeStaffRole, isCanonicalStaffRole, isLoomHost, isEligibleForPrivilegedLoginPage, isEligibleForMobileRecovery } from '../../utils/loomIdentity';
 import PhoneInput from 'react-phone-input-2';
 import 'react-phone-input-2/lib/style.css';
 
@@ -43,6 +46,29 @@ export default function AdminLoginPage() {
   const [mobilePhone, setMobilePhone] = useState('');
   const [mobilePassword, setMobilePassword] = useState('');
   const [mobileShowPwd, setMobileShowPwd] = useState(false);
+
+  // ── V1 Auth Stabilization: Mobile-OTP password recovery, privileged tier.
+  // Owner/Admin/Super Admin already had the real Gmail-backed email reset
+  // below (sendPasswordResetEmail); this adds the SAME mobile-OTP mechanism
+  // RoleLoginPage.tsx's common mode already uses for operational staff —
+  // identical callables (mobileResetLookup/mobileResetSendOtp), identical
+  // steps, identical defense-in-depth re-check (isEligibleForMobileRecovery
+  // already admits Owner/Admin/Super Admin — see loomIdentity.ts). The
+  // requester never types a phone number; only the masked last-4 digits are
+  // ever shown, and the full number is exchanged for only at the instant
+  // "Send OTP" is clicked.
+  const [resetTab, setResetTab] = useState<'email' | 'mobile'>('email');
+  const [resetStep, setResetStep] = useState<'identify' | 'confirm' | 'otp'>('identify');
+  const [resetEmailValue, setResetEmailValue] = useState('');
+  const [resetLookupLoading, setResetLookupLoading] = useState(false);
+  const [resetMaskedLast4, setResetMaskedLast4] = useState<string | null>(null);
+  const resetRecoveryTokenRef = React.useRef<string | null>(null);
+  const [otpValue, setOtpValue] = useState('');
+  const [newPasswordValue, setNewPasswordValue] = useState('');
+  const [confirmPasswordValue, setConfirmPasswordValue] = useState('');
+  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+  const recaptchaVerifierRef = React.useRef<RecaptchaVerifier | null>(null);
+  const recaptchaContainerId = React.useRef(`rcv-admin-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`).current;
 
   const fromPath = (location.state as any)?.from?.pathname as string | undefined;
   const from = fromPath || '/admin/dashboard';
@@ -310,6 +336,164 @@ export default function AdminLoginPage() {
     }
   };
 
+  // ── V1 Auth Stabilization: Mobile-OTP password recovery (privileged) ────
+  const initRecaptcha = () => {
+    if (recaptchaVerifierRef.current) {
+      try { recaptchaVerifierRef.current.clear(); } catch {}
+      recaptchaVerifierRef.current = null;
+    }
+    const container = document.getElementById(recaptchaContainerId);
+    if (!container) return;
+    try {
+      recaptchaVerifierRef.current = new RecaptchaVerifier(auth, recaptchaContainerId, {
+        size: 'invisible',
+        callback: () => {},
+        'expired-callback': () => {
+          setError('Security verification expired. Please try again.');
+          setLoading(false);
+          initRecaptcha();
+        },
+      });
+    } catch (e) {
+      console.error('[AdminLoginPage] Failed to initialize RecaptchaVerifier:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (mode !== 'reset' || resetTab !== 'mobile') return;
+    const timerId = setTimeout(() => initRecaptcha(), 0);
+    return () => {
+      clearTimeout(timerId);
+      if (recaptchaVerifierRef.current) {
+        try { recaptchaVerifierRef.current.clear(); } catch {}
+        recaptchaVerifierRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, resetTab]);
+
+  const resetPhoneFlowState = () => {
+    setOtpValue(''); setNewPasswordValue(''); setConfirmPasswordValue('');
+    setConfirmationResult(null); setError(''); setOkMsg('');
+    setResetStep('identify'); setResetEmailValue(''); setResetMaskedLast4(null);
+    resetRecoveryTokenRef.current = null;
+  };
+
+  // STEP 2-4: identify by email, resolve the AUTHORITATIVE stored mobile
+  // number server-side (mobileResetLookup) — never a phone number typed by
+  // the requester, never the full number in the response.
+  const handleIdentifyForReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(''); setOkMsg('');
+    const target = resetEmailValue.trim().toLowerCase();
+    if (!target) {
+      setError('Please enter your account email.');
+      return;
+    }
+    setResetLookupLoading(true);
+    try {
+      const lookupFn = httpsCallable(functions, 'mobileResetLookup');
+      const result = await lookupFn({ email: target });
+      const data = result.data as { eligible: boolean; reason?: string; maskedLast4?: string; recoveryToken?: string };
+      if (!data.eligible) {
+        if (data.reason === 'inactive') setError('This account is inactive. Contact your administrator.');
+        else if (data.reason === 'no_mobile') setError('No mobile number is configured for this account. Contact your administrator.');
+        else setError('This mobile number is not registered for this account.');
+        return;
+      }
+      resetRecoveryTokenRef.current = data.recoveryToken!;
+      setResetMaskedLast4(data.maskedLast4 || null);
+      setResetStep('confirm');
+    } catch (err: any) {
+      setError(err?.message || 'Could not look up this account. Please try again.');
+    } finally {
+      setResetLookupLoading(false);
+    }
+  };
+
+  // STEP 5-6: only on explicit "Send OTP" do we exchange the recoveryToken
+  // for the real number (mobileResetSendOtp) — passed straight into
+  // signInWithPhoneNumber(), never stored in React state or rendered.
+  const handleConfirmSendOtp = async () => {
+    setError(''); setOkMsg('');
+    const token = resetRecoveryTokenRef.current;
+    if (!token) {
+      setError('Session expired. Please start again.');
+      setResetStep('identify');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (!recaptchaVerifierRef.current) {
+        initRecaptcha();
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (!recaptchaVerifierRef.current) throw new Error('Could not initialize security check. Please refresh the page.');
+      const sendOtpFn = httpsCallable(functions, 'mobileResetSendOtp');
+      const exchangeResult = await sendOtpFn({ recoveryToken: token });
+      const { phoneNumber } = exchangeResult.data as { phoneNumber: string };
+      const confirmation = await signInWithPhoneNumber(auth, phoneNumber, recaptchaVerifierRef.current);
+      setConfirmationResult(confirmation);
+      setResetStep('otp');
+    } catch (err: any) {
+      if (recaptchaVerifierRef.current) {
+        try { recaptchaVerifierRef.current.clear(); } catch {}
+        recaptchaVerifierRef.current = null;
+      }
+      initRecaptcha();
+      if (err.code === 'auth/too-many-requests') setError('Too many attempts. Please wait a few minutes and try again.');
+      else setError(err.message || 'Failed to send OTP. Please check your connection.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!otpValue || otpValue.length !== 6) {
+      setError('Please enter the 6-digit verification code.');
+      return;
+    }
+    if (newPasswordValue.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPasswordValue !== confirmPasswordValue) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (!confirmationResult) throw new Error('Session lost. Please request a new code.');
+      const cred = await confirmationResult.confirm(otpValue);
+
+      // Defense-in-depth re-check: mobileResetLookup + mobileResetSendOtp
+      // already established eligibility before any OTP was sent.
+      // isEligibleForMobileRecovery admits Owner/Admin/Super Admin — this
+      // only guards the narrow window between OTP send and verification.
+      const staffSnap = await getDoc(doc(db, 'staff', cred.user.uid));
+      const data = staffSnap.exists() ? staffSnap.data() : null;
+      if (!isEligibleForMobileRecovery(data?.role, data?.active)) {
+        await signOut(auth);
+        throw new Error('This mobile number is not registered for this account.');
+      }
+
+      const changeFn = httpsCallable(functions, 'staffChangePassword');
+      await changeFn({ newPassword: newPasswordValue });
+      await signOut(auth);
+      resetPhoneFlowState();
+      setMode('login');
+      setOkMsg('Password updated. Please sign in with your new password.');
+    } catch (err: any) {
+      if (err.code === 'auth/invalid-verification-code') setError('Incorrect code. Please double-check and try again.');
+      else if (err.code === 'auth/code-expired') setError('Code expired. Please request a new one.');
+      else setError(err?.message || 'Password reset failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
@@ -458,17 +642,155 @@ export default function AdminLoginPage() {
           )}
 
           {mode === 'reset' && (
-            <form onSubmit={handleReset} className="space-y-4 relative z-20" autoComplete="off">
-              <input type="text" style={{ display: 'none' }} />
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Admin email" className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="nope" />
+            <>
+              <div className="flex mb-6 border border-gray-200 rounded-lg p-1 bg-gray-50 relative z-20">
+                <button
+                  type="button"
+                  onClick={() => { setResetTab('email'); setError(''); setOkMsg(''); }}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${resetTab === 'email' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                >
+                  Email Link
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setResetTab('mobile'); resetPhoneFlowState(); }}
+                  className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${resetTab === 'mobile' ? 'bg-black text-white' : 'text-gray-500 hover:text-black'}`}
+                >
+                  Mobile OTP
+                </button>
               </div>
-              <button type="submit" disabled={loading} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50">Send Recovery Link</button>
-              <button type="button" onClick={() => { setMode('login'); setIsLocked(false); }} className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2">Back to sign in</button>
-            </form>
+
+              {resetTab === 'email' && (
+                <form onSubmit={handleReset} className="space-y-4 relative z-20" autoComplete="off">
+                  <input type="text" style={{ display: 'none' }} />
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Admin email" className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black" required autoComplete="nope" />
+                  </div>
+                  <button type="submit" disabled={loading} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50">Send Recovery Link</button>
+                  <button type="button" onClick={() => { setMode('login'); setIsLocked(false); }} className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2">Back to sign in</button>
+                </form>
+              )}
+
+              {resetTab === 'mobile' && resetStep === 'identify' && (
+                <form onSubmit={handleIdentifyForReset} className="space-y-4 relative z-20">
+                  <p className="text-[11px] text-gray-500 leading-relaxed mb-2">
+                    Enter your account email. If it has a registered mobile number, we'll ask you to confirm it before sending a code.
+                  </p>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input
+                      type="email"
+                      value={resetEmailValue}
+                      onChange={(e) => setResetEmailValue(e.target.value)}
+                      placeholder="account email"
+                      className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black"
+                      required
+                      autoComplete="email"
+                      autoFocus
+                    />
+                  </div>
+                  <button type="submit" disabled={resetLookupLoading} className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+                    {resetLookupLoading ? 'Checking...' : 'Continue'} <ArrowRight size={14} />
+                  </button>
+                  <button type="button" onClick={() => { setMode('login'); setIsLocked(false); }} className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2">Back to sign in</button>
+                </form>
+              )}
+
+              {resetTab === 'mobile' && resetStep === 'confirm' && (
+                <div className="space-y-4 relative z-20">
+                  <p className="text-[11px] text-gray-500 leading-relaxed mb-2">Confirm this is your registered mobile number.</p>
+                  <div className="flex items-center justify-center gap-2 border border-gray-200 rounded-xl py-5 bg-gray-50">
+                    <Phone size={16} className="text-gray-400" />
+                    <span className="text-lg font-mono tracking-widest text-black">•••••••• {resetMaskedLast4}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleConfirmSendOtp}
+                    disabled={loading}
+                    className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {loading ? 'Sending...' : 'Send OTP'} <Phone size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setResetStep('identify'); setResetMaskedLast4(null); resetRecoveryTokenRef.current = null; setError(''); }}
+                    className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2"
+                  >
+                    Change / Cancel
+                  </button>
+                </div>
+              )}
+
+              {resetTab === 'mobile' && resetStep === 'otp' && (
+                <form onSubmit={handleConfirmResetOtp} className="space-y-4 relative z-20">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Verification Code</label>
+                    <button type="button" onClick={() => { setResetStep('confirm'); setOtpValue(''); setError(''); }} className="text-[10px] text-gray-400 hover:text-black uppercase flex items-center gap-1">
+                      Back
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={otpValue}
+                      onChange={(e) => setOtpValue(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                      placeholder="• • • • • •"
+                      className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-lg tracking-[0.4em] focus:outline-none focus:border-black"
+                      autoFocus
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400">Code sent to •••••••• {resetMaskedLast4}</p>
+
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input
+                      type={showPwd ? 'text' : 'password'}
+                      value={newPasswordValue}
+                      onChange={(e) => setNewPasswordValue(e.target.value)}
+                      placeholder="New password (min. 8 characters)"
+                      className="w-full border border-gray-300 rounded-lg pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-black"
+                      autoComplete="new-password"
+                    />
+                    <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black">
+                      {showPwd ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input
+                      type={showPwd ? 'text' : 'password'}
+                      value={confirmPasswordValue}
+                      onChange={(e) => setConfirmPasswordValue(e.target.value)}
+                      placeholder="Confirm new password"
+                      className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-3 text-sm focus:outline-none focus:border-black"
+                      autoComplete="new-password"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || otpValue.length !== 6}
+                    className="w-full bg-black text-white rounded-lg py-3 text-xs tracking-[0.3em] uppercase hover:bg-gray-900 shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {loading ? 'Updating...' : 'Verify & Reset Password'} <ArrowRight size={14} />
+                  </button>
+                  <button type="button" onClick={() => { resetPhoneFlowState(); setMode('login'); }} className="w-full text-xs text-gray-500 hover:text-black tracking-wider mt-2">Back to sign in</button>
+                </form>
+              )}
+            </>
           )}
         </div>
+
+        {mode === 'reset' && resetTab === 'mobile' && (
+          <div
+            id={recaptchaContainerId}
+            aria-hidden="true"
+            style={{ position: 'absolute', bottom: 0, left: 0, opacity: 0, pointerEvents: 'none' }}
+          />
+        )}
       </div>
     </div>
   );

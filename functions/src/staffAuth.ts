@@ -162,3 +162,20 @@ export function isPrivilegedMobileLoginEligible(role: unknown, active: unknown):
   const r = String(role ?? "").toLowerCase().trim();
   return r === "owner" || r === "admin" || r === "super_admin";
 }
+
+/**
+ * True when a resolved staff/{uid} role/active pair is eligible for the
+ * OPERATIONAL-tier Mobile Number + Password login method (V1 Auth
+ * Stabilization) — the 8 operational roles only (never Owner/Admin/Super
+ * Admin, which keep their own separate privileged method above and their
+ * own dedicated page). Exact mirror of isPrivilegedMobileLoginEligible's
+ * STRICT active check (only the literal boolean `true` is accepted — no
+ * coercion) so both methods share one security posture. Client mirror:
+ * src/utils/loomIdentity.ts isStaffMobileLoginEligible.
+ */
+export function isStaffMobileLoginEligible(role: unknown, active: unknown): boolean {
+  if (active !== true) return false;
+  const r = String(role ?? "").toLowerCase().trim();
+  const OPERATIONAL = ["designer", "pm", "dispatch", "guard", "tailor", "store", "accounts", "analysis"];
+  return OPERATIONAL.includes(r);
+}

@@ -277,3 +277,17 @@ export function isPrivilegedMobileLoginEligible(role: unknown, active?: unknown)
   const r = String(role ?? "").toLowerCase().trim();
   return r === "owner" || r === "admin" || r === "super_admin";
 }
+
+/**
+ * True when a resolved staff/{uid} role/active pair is eligible for the
+ * OPERATIONAL-tier Mobile Number + Password login method (V1 Auth
+ * Stabilization) — the client-side mirror of the identical server-side
+ * helper in functions/src/staffAuth.ts (isStaffMobileLoginEligible). The 8
+ * operational roles only — Owner/Admin/Super Admin keep
+ * isPrivilegedMobileLoginEligible above and their own dedicated page.
+ * Same STRICT active check (only the literal boolean `true` is accepted).
+ */
+export function isStaffMobileLoginEligible(role: unknown, active?: unknown): boolean {
+  if (active !== true) return false;
+  return isOperationalStaffRole(role);
+}

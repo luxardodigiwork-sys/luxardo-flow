@@ -1,6 +1,13 @@
 /* eslint-disable */
 /**
- * LUXARDO FLOW — PRIVILEGED MOBILE NUMBER + PASSWORD LOGIN (P0-2)
+ * LUXARDO FLOW — MOBILE NUMBER + PASSWORD LOGIN (P0-2, generalized in V1
+ * Auth Stabilization)
+ *
+ * Two exports share the mechanism below (see createMobilePasswordLogin):
+ * privilegedMobilePasswordLogin (Owner/Admin/Super Admin, unchanged since
+ * P0-2) and staffMobilePasswordLogin (the 8 operational roles). Each tier
+ * keeps its own eligibility check and its own rate-limit collection, so a
+ * lockout or behavior change in one tier never affects the other.
  *
  * Firebase Auth has no native "phone number + password" sign-in primitive
  * (it supports Email+Password, Phone+SMS-OTP, and OAuth providers, but no
@@ -43,7 +50,7 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import * as crypto from "crypto";
-import { isPrivilegedMobileLoginEligible } from "./staffAuth";
+import { isPrivilegedMobileLoginEligible, isStaffMobileLoginEligible } from "./staffAuth";
 
 const db = admin.firestore();
 
@@ -102,8 +109,8 @@ function sha256Hex(input: string): string {
  * — does not itself record an attempt (that happens once, in
  * recordAttempt, after the real attempt completes).
  */
-async function checkRateLimit(phoneKey: string): Promise<void> {
-  const snap = await db.doc(`privilegedMobileLoginAttempts/${phoneKey}`).get();
+async function checkRateLimit(collection: string, phoneKey: string): Promise<void> {
+  const snap = await db.doc(`${collection}/${phoneKey}`).get();
   if (!snap.exists) return;
   const data = snap.data()!;
   if (data.lockedUntil && Date.now() < data.lockedUntil) {
@@ -118,8 +125,8 @@ async function checkRateLimit(phoneKey: string): Promise<void> {
  * instead of compounding indefinitely. Firestore transaction so concurrent
  * attempts against the same phone number cannot race past the limit.
  */
-async function recordAttempt(phoneKey: string, success: boolean): Promise<void> {
-  const ref = db.doc(`privilegedMobileLoginAttempts/${phoneKey}`);
+async function recordAttempt(collection: string, phoneKey: string, success: boolean): Promise<void> {
+  const ref = db.doc(`${collection}/${phoneKey}`);
   await db.runTransaction(async (tx) => {
     if (success) {
       tx.set(ref, { count: 0, lockedUntil: null }, { merge: true });
@@ -141,72 +148,106 @@ async function recordAttempt(phoneKey: string, success: boolean): Promise<void> 
   });
 }
 
-export const privilegedMobilePasswordLogin = onCall(async (request) => {
-  const { phoneNumber, password } = request.data as { phoneNumber?: string; password?: string };
+/**
+ * Shared core for every Mobile Number + Password login method. Both
+ * exports below are thin, tier-specific wrappers around this ONE
+ * implementation (rate limiting, Identity Toolkit REST password check,
+ * custom-token minting) so there is exactly one code path to audit for
+ * this security-sensitive flow — only the eligibility predicate and the
+ * rate-limit collection (kept separate per tier so a lockout on one tier's
+ * phone number can never affect the other) differ between tiers.
+ */
+function createMobilePasswordLogin(opts: {
+  rateLimitCollection: string;
+  isEligible: (role: unknown, active: unknown) => boolean;
+  logTag: string;
+}) {
+  return onCall(async (request) => {
+    const { phoneNumber, password } = request.data as { phoneNumber?: string; password?: string };
 
-  if (typeof phoneNumber !== "string" || !E164_RE.test(phoneNumber.trim())) {
-    throw GENERIC_FAILURE();
-  }
-  if (typeof password !== "string" || !password) {
-    throw GENERIC_FAILURE();
-  }
+    if (typeof phoneNumber !== "string" || !E164_RE.test(phoneNumber.trim())) {
+      throw GENERIC_FAILURE();
+    }
+    if (typeof password !== "string" || !password) {
+      throw GENERIC_FAILURE();
+    }
 
-  const e164 = phoneNumber.trim();
-  const phoneKey = sha256Hex(e164);
+    const e164 = phoneNumber.trim();
+    const phoneKey = sha256Hex(e164);
 
-  // Server-side rate limit, checked BEFORE any Auth/REST call — independent
-  // of client-side localStorage, which an attacker can simply clear.
-  await checkRateLimit(phoneKey);
+    // Server-side rate limit, checked BEFORE any Auth/REST call — independent
+    // of client-side localStorage, which an attacker can simply clear.
+    await checkRateLimit(opts.rateLimitCollection, phoneKey);
 
-  let success = false;
-  try {
-    let userRecord;
+    let success = false;
     try {
-      userRecord = await admin.auth().getUserByPhoneNumber(e164);
-    } catch {
-      throw GENERIC_FAILURE();
-    }
+      let userRecord;
+      try {
+        userRecord = await admin.auth().getUserByPhoneNumber(e164);
+      } catch {
+        throw GENERIC_FAILURE();
+      }
 
-    const staffSnap = await db.doc(`staff/${userRecord.uid}`).get();
-    const staffData = staffSnap.exists ? staffSnap.data() : null;
-    if (!isPrivilegedMobileLoginEligible(staffData?.role, staffData?.active)) {
-      throw GENERIC_FAILURE();
-    }
+      const staffSnap = await db.doc(`staff/${userRecord.uid}`).get();
+      const staffData = staffSnap.exists ? staffSnap.data() : null;
+      if (!opts.isEligible(staffData?.role, staffData?.active)) {
+        throw GENERIC_FAILURE();
+      }
 
-    if (!userRecord.email) {
-      // A privileged account with no email on the Auth record cannot be
-      // verified via Identity Toolkit's email/password endpoint — fails
-      // closed exactly like every other ineligible case above.
-      throw GENERIC_FAILURE();
-    }
+      if (!userRecord.email) {
+        // An account with no email on the Auth record cannot be verified
+        // via Identity Toolkit's email/password endpoint — fails closed
+        // exactly like every other ineligible case above.
+        throw GENERIC_FAILURE();
+      }
 
-    let restRes: Response;
-    try {
-      restRes = await fetch(
-        identityToolkitUrl("accounts:signInWithPassword"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: userRecord.email, password, returnSecureToken: false }),
-        },
-      );
-    } catch {
-      throw GENERIC_FAILURE();
-    }
-    if (!restRes.ok) {
-      throw GENERIC_FAILURE();
-    }
+      let restRes: Response;
+      try {
+        restRes = await fetch(
+          identityToolkitUrl("accounts:signInWithPassword"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: userRecord.email, password, returnSecureToken: false }),
+          },
+        );
+      } catch {
+        throw GENERIC_FAILURE();
+      }
+      if (!restRes.ok) {
+        throw GENERIC_FAILURE();
+      }
 
-    const token = await admin.auth().createCustomToken(userRecord.uid);
-    success = true;
-    return { token };
-  } catch (err) {
-    // Deliberately logs a FIXED string only — never request.data, the REST
-    // request body, the REST response body, or the caught error object,
-    // any of which could contain or be derived from the password.
-    console.error("[privilegedMobilePasswordLogin] login attempt rejected");
-    throw err instanceof HttpsError ? err : GENERIC_FAILURE();
-  } finally {
-    await recordAttempt(phoneKey, success);
-  }
+      const token = await admin.auth().createCustomToken(userRecord.uid);
+      success = true;
+      return { token };
+    } catch (err) {
+      // Deliberately logs a FIXED string only — never request.data, the REST
+      // request body, the REST response body, or the caught error object,
+      // any of which could contain or be derived from the password.
+      console.error(`[${opts.logTag}] login attempt rejected`);
+      throw err instanceof HttpsError ? err : GENERIC_FAILURE();
+    } finally {
+      await recordAttempt(opts.rateLimitCollection, phoneKey, success);
+    }
+  });
+}
+
+/** Unchanged behavior/collection/eligibility — see createMobilePasswordLogin above. */
+export const privilegedMobilePasswordLogin = createMobilePasswordLogin({
+  rateLimitCollection: "privilegedMobileLoginAttempts",
+  isEligible: isPrivilegedMobileLoginEligible,
+  logTag: "privilegedMobilePasswordLogin",
+});
+
+/**
+ * V1 Auth Stabilization — the SAME mechanism, open to the 8 OPERATIONAL
+ * staff roles only (never Owner/Admin/Super Admin, who keep the export
+ * above and their own dedicated /admin/login page). A separate rate-limit
+ * collection (staffMobileLoginAttempts) keeps lockouts isolated per tier.
+ */
+export const staffMobilePasswordLogin = createMobilePasswordLogin({
+  rateLimitCollection: "staffMobileLoginAttempts",
+  isEligible: isStaffMobileLoginEligible,
+  logTag: "staffMobilePasswordLogin",
 });

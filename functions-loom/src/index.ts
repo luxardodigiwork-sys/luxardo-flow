@@ -31,9 +31,10 @@ export {
 export { userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "../../functions/src/production";
 
 /* P0-2 — Privileged (Owner/Admin/Super Admin) Mobile Number + Password
- * login. FLOW-only: deliberately never exported from functions/src/index.ts
- * (the B2C-deployed bundle). */
-export { privilegedMobilePasswordLogin } from "../../functions/src/privilegedAuth";
+ * login, and (V1 Auth Stabilization) the same mechanism opened to the 8
+ * operational staff roles. FLOW-only: deliberately never exported from
+ * functions/src/index.ts (the B2C-deployed bundle). */
+export { privilegedMobilePasswordLogin, staffMobilePasswordLogin } from "../../functions/src/privilegedAuth";
 
 /* Phase 2 · Block 2.1 — Catalogue Design management + version preservation */
 export {
