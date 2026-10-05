@@ -125,3 +125,13 @@ export {
   fabricStockReceive,
   fabricStockIssue,
 } from "../../functions/src/fabric";
+
+/* V1 Auth Stabilization — TOTP (Google Authenticator) second factor,
+ * Admin/Super Admin only. FLOW-only: deliberately never exported from
+ * functions/src/index.ts (the B2C-deployed bundle). */
+export {
+  totpEnrollStart,
+  totpEnrollVerify,
+  totpDisable,
+  totpStatus,
+} from "../../functions/src/totp";
