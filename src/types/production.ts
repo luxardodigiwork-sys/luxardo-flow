@@ -721,8 +721,13 @@ export type AuditAction =
   | "STAFF_CREATE"
   | "STAFF_UPDATE"
   | "STAFF_ROLE_CHANGE"
+  | "STAFF_EMAIL_CHANGE" // Super-Admin-only, via staffUpdate (syncs the real Auth email, not just the Firestore mirror)
+  | "STAFF_PHONE_CHANGE"
   | "STAFF_PASSWORD_CHANGED" // self-service (mandatory first-login change, or voluntary) via staffChangePassword
+  | "STAFF_PASSWORD_RESET" // Super-Admin-initiated, via staffResetPassword (never logs the generated password)
+  | "STAFF_FORCE_PASSWORD_CHANGE" // Super-Admin sets mustChangePassword=true on another User, via staffUpdate
   | "STAFF_PROVISION_ORPHAN" // Auth user created but its staff/customers write AND the compensating delete both failed — needs manual review.
+  | "STAFF_BACKFILL"
   | "REPORT_EXPORT";
 
 export interface AuditLogDoc {

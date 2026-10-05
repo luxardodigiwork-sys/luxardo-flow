@@ -25,6 +25,9 @@ export {
   staffUpdate,
   staffChangePassword,
   staffBackfillCustomerDocs,
+  staffResetPassword,
+  staffLookupByPhone,
+  staffCheckAuthExists,
   karigarCreate,
   karigarUpdate,
 } from "../../functions/src/production";

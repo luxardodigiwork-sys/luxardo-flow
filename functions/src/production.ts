@@ -20,6 +20,7 @@ import {
   normalizeStaffRole,
   CanonicalStaffRole,
   requireStaff,
+  hasAnyRole,
   CANONICAL_DEPARTMENTS,
 } from "./staffAuth";
 
@@ -54,6 +55,24 @@ async function requireAdmin(uid: string): Promise<{ name: string; role: string }
     throw new HttpsError("permission-denied", "Admin role required.");
   }
   return { name: d.firstName ? `${d.firstName} ${d.lastName || ""}`.trim() : d.name || "Admin", role };
+}
+
+/**
+ * Stricter gate for the Super-Admin-only account-management operations
+ * added alongside Staff Management's User Management extension (email
+ * change, admin-initiated password reset, forced password change) —
+ * requireAdmin() above still governs every pre-existing admin/owner
+ * capability (role change, activate/deactivate, mobile number) unchanged.
+ * hasAnyRole(identity, ["super_admin"]) is already an exact-match check
+ * (it only elevates super_admin INTO an "admin"-listed permission, never
+ * the reverse), so this never admits plain admin or owner.
+ */
+async function requireSuperAdmin(uid: string): Promise<{ name: string; role: string }> {
+  const identity = await requireStaff(uid);
+  if (!hasAnyRole(identity, ["super_admin"])) {
+    throw new HttpsError("permission-denied", "Super Admin role required for this operation.");
+  }
+  return { name: identity.name, role: identity.role };
 }
 
 /* ──────────────────── HELPER: audit log ─────────────────────────── */
@@ -476,7 +495,35 @@ export const staffUpdate = onCall(async (request) => {
   if (patch.mustChangePassword !== undefined && typeof patch.mustChangePassword !== "boolean") {
     throw new HttpsError("invalid-argument", "mustChangePassword must be a boolean.");
   }
+
+  // User-Management extension — email change and force-password-change are
+  // Super-Admin-only (every other field above stays on the pre-existing
+  // admin/owner/super_admin tier requireAdmin() already granted). Checked
+  // BEFORE any Auth/Firestore mutation so a rejected call touches nothing.
+  if (("email" in patch || "mustChangePassword" in patch) && actor.role !== "super_admin") {
+    throw new HttpsError("permission-denied", "Only Super Admin can change email or force a password change.");
+  }
+
   validateProfilePatch(patch);
+
+  // email lives on the Firebase Auth record (the actual sign-in credential)
+  // — staff/{uid}.email below is only a display mirror, exactly like
+  // phoneNumber. Applied via the Admin SDK BEFORE the Firestore batch, so
+  // the mirror is never written unless the Auth record actually accepted
+  // the change. (Previously this field was written to Firestore ONLY,
+  // silently desyncing staff/{uid} from the real Auth sign-in email.)
+  if (patch.email !== undefined) {
+    const rawEmail = String(patch.email ?? "").trim();
+    if (!rawEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+      throw new HttpsError("invalid-argument", "email must be a valid address.");
+    }
+    try {
+      await admin.auth().updateUser(uid, { email: rawEmail });
+    } catch (err: any) {
+      throw new HttpsError("invalid-argument", err?.message || "Could not update email on the Auth account.");
+    }
+    patch.email = rawEmail;
+  }
 
   // phoneNumber lives on the Firebase Auth record (native phone-sign-in
   // credential) — staff/{uid}.phoneNumber below is only a display mirror.
@@ -513,13 +560,22 @@ export const staffUpdate = onCall(async (request) => {
   batch.set(db.doc(`customers/${uid}`), mirror, { merge: true });
   await batch.commit();
 
-  // Audit: role change and phone change each get their own action
+  // Audit: role change, email change, phone change, and an admin forcing a
+  // password change each get their own distinct action (checked in this
+  // order so a multi-field update is attributed to its most significant
+  // change — mirrors the pre-existing role/phone precedent exactly).
   if (patch.role && patch.role !== before.role) {
     await writeAudit("STAFF_ROLE_CHANGE", "staff", uid, request.auth.uid, actor.name, actor.role,
       { role: before.role }, { role: patch.role });
+  } else if (patch.email !== undefined && patch.email !== before.email) {
+    await writeAudit("STAFF_EMAIL_CHANGE", "staff", uid, request.auth.uid, actor.name, actor.role,
+      { email: before.email }, { email: patch.email });
   } else if (patch.phoneNumber !== undefined && patch.phoneNumber !== (before.phoneNumber ?? null)) {
     await writeAudit("STAFF_PHONE_CHANGE", "staff", uid, request.auth.uid, actor.name, actor.role,
       { phoneNumber: before.phoneNumber ?? null }, { phoneNumber: patch.phoneNumber });
+  } else if (patch.mustChangePassword === true && before.mustChangePassword !== true) {
+    await writeAudit("STAFF_FORCE_PASSWORD_CHANGE", "staff", uid, request.auth.uid, actor.name, actor.role,
+      { mustChangePassword: before.mustChangePassword ?? false }, { mustChangePassword: true });
   } else {
     await writeAudit("STAFF_UPDATE", "staff", uid, request.auth.uid, actor.name, actor.role,
       { displayName: before.displayName, email: before.email, active: before.active },
@@ -901,6 +957,127 @@ export const staffBackfillCustomerDocs = onCall(async (request) => {
   }
 
   return { ok: true, report };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffResetPassword — Super-Admin-initiated password reset for ANOTHER
+ * staff member (distinct from staffChangePassword above, which is
+ * self-service only). Generates a random temporary password server-side
+ * (same convention as provisionStaffAccount's fallback), rotates it on the
+ * real Auth record, and forces mustChangePassword so the target must set
+ * their own password on next login. The generated password is returned to
+ * the caller EXACTLY ONCE (there is no other channel to hand it to the
+ * target) and is never written to Firestore or the audit log.
+ *
+ * Input : { uid: string }
+ * Output: { ok: true, temporaryPassword: string }
+ * ═══════════════════════════════════════════════════════════════════*/
+export const staffResetPassword = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const actor = await requireSuperAdmin(request.auth.uid);
+
+  const { uid } = request.data as { uid?: string };
+  if (!uid || typeof uid !== "string") {
+    throw new HttpsError("invalid-argument", "uid is required.");
+  }
+
+  const ref = db.doc(`staff/${uid}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", `Staff doc ${uid} not found.`);
+
+  const temporaryPassword = crypto.randomBytes(10).toString("hex");
+  try {
+    await admin.auth().updateUser(uid, { password: temporaryPassword });
+  } catch (err: any) {
+    if (err?.code === "auth/user-not-found") {
+      throw new HttpsError("failed-precondition", "This Auth account no longer exists — cannot reset its password.");
+    }
+    throw new HttpsError("internal", err?.message || "Could not reset password.");
+  }
+
+  const now = new Date().toISOString();
+  await ref.set({ mustChangePassword: true, updatedAt: now }, { merge: true });
+
+  // Deliberately logs no password-shaped field — only the boolean flag.
+  await writeAudit("STAFF_PASSWORD_RESET", "staff", uid, request.auth.uid, actor.name, actor.role,
+    null, { mustChangePassword: true });
+
+  return { ok: true, temporaryPassword };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffLookupByPhone — resolves which (if any) Auth user currently owns a
+ * phone number, so an admin can see who holds a number BEFORE attempting
+ * to reassign it (Firebase Auth's own uniqueness constraint would reject
+ * the reassignment anyway — this just surfaces who/what that is, rather
+ * than only the resulting error, matching the existing admin/owner/
+ * super_admin read tier for this page).
+ *
+ * Input : { phoneNumber: string }
+ * Output: { exists: false } | { exists: true, uid, email, disabled, staff }
+ * ═══════════════════════════════════════════════════════════════════*/
+export const staffLookupByPhone = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  await requireAdmin(request.auth.uid);
+
+  const { phoneNumber } = request.data as { phoneNumber?: string };
+  const trimmed = String(phoneNumber ?? "").trim();
+  if (!trimmed || !E164_RE.test(trimmed)) {
+    throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+  }
+
+  try {
+    const userRecord = await admin.auth().getUserByPhoneNumber(trimmed);
+    const staffSnap = await db.doc(`staff/${userRecord.uid}`).get();
+    return {
+      exists: true,
+      uid: userRecord.uid,
+      email: userRecord.email ?? null,
+      disabled: userRecord.disabled,
+      staff: staffSnap.exists ? staffSnap.data() : null,
+    };
+  } catch (err: any) {
+    if (err?.code === "auth/user-not-found") {
+      return { exists: false };
+    }
+    throw new HttpsError("internal", "Failed to look up phone number.");
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffCheckAuthExists — live (never persisted) check of whether each
+ * given staff/{uid} still has a corresponding Firebase Auth user. A
+ * staff/{uid} doc is never auto-created or auto-deleted here — this is a
+ * pure read, so the Staff Management UI can hide (not delete) any record
+ * whose Auth account was removed outside the app (e.g. via Console),
+ * instead of silently showing/editing a doc whose mutations would all now
+ * fail server-side. Chunks into groups of 100 (admin.auth().getUsers' own
+ * batch limit); the staff collection is tiny by design (same assumption
+ * staffBackfillCustomerDocs's 450-doc cap already makes).
+ *
+ * Input : { uids: string[] }
+ * Output: { authExists: Record<string, boolean> }
+ * ═══════════════════════════════════════════════════════════════════*/
+export const staffCheckAuthExists = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  await requireAdmin(request.auth.uid);
+
+  const { uids } = request.data as { uids?: unknown };
+  if (!Array.isArray(uids) || uids.length === 0 || !uids.every((u) => typeof u === "string")) {
+    throw new HttpsError("invalid-argument", "uids must be a non-empty array of strings.");
+  }
+
+  const existing = new Set<string>();
+  for (let i = 0; i < uids.length; i += 100) {
+    const chunk = uids.slice(i, i + 100).map((uid: string) => ({ uid }));
+    const result = await admin.auth().getUsers(chunk);
+    for (const u of result.users) existing.add(u.uid);
+  }
+
+  const authExists: Record<string, boolean> = {};
+  for (const uid of uids as string[]) authExists[uid] = existing.has(uid);
+
+  return { authExists };
 });
 
 /* ═══════════════════════════════════════════════════════════════════
