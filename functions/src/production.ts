@@ -58,14 +58,15 @@ async function requireAdmin(uid: string): Promise<{ name: string; role: string }
 }
 
 /**
- * Stricter gate for the Super-Admin-only account-management operations
- * added alongside Staff Management's User Management extension (email
- * change, admin-initiated password reset, forced password change) —
- * requireAdmin() above still governs every pre-existing admin/owner
- * capability (role change, activate/deactivate, mobile number) unchanged.
- * hasAnyRole(identity, ["super_admin"]) is already an exact-match check
- * (it only elevates super_admin INTO an "admin"-listed permission, never
- * the reverse), so this never admits plain admin or owner.
+ * The gate for every staff-account-management mutation (create, update,
+ * delete, password reset, phone lookup) — Super Admin ONLY. requireAdmin()
+ * above is now used elsewhere in this file (karigar management, the staff
+ * backfill job) but no longer by any staff-mutating callable: Staff
+ * Management gives admin/owner read-only visibility only (gated by
+ * rolePermissions.ts's 'production.staff'), never a mutation path.
+ * hasAnyRole(identity, ["super_admin"]) is an exact-match check (it only
+ * elevates super_admin INTO an "admin"-listed permission, never the
+ * reverse), so this never admits plain admin or owner.
  */
 async function requireSuperAdmin(uid: string): Promise<{ name: string; role: string }> {
   const identity = await requireStaff(uid);
@@ -73,6 +74,38 @@ async function requireSuperAdmin(uid: string): Promise<{ name: string; role: str
     throw new HttpsError("permission-denied", "Super Admin role required for this operation.");
   }
   return { name: identity.name, role: identity.role };
+}
+
+/**
+ * Resolves a phone number to its current Firebase Auth uid, or null if the
+ * number isn't registered to anyone. The one place getUserByPhoneNumber is
+ * called for this purpose — both assertPhoneNotTaken (below) and
+ * staffLookupByPhone use it.
+ */
+async function getUidByPhone(phoneNumber: string): Promise<string | null> {
+  try {
+    const rec = await admin.auth().getUserByPhoneNumber(phoneNumber);
+    return rec.uid;
+  } catch (err: any) {
+    if (err?.code === "auth/user-not-found") return null;
+    throw err;
+  }
+}
+
+/**
+ * Proactively rejects a phone-number assignment that would collide with a
+ * DIFFERENT Auth user, with a clear, specific error — rather than relying
+ * only on Firebase Auth's own uniqueness constraint (which still applies as
+ * the authoritative, race-safe backstop; this check just gives a better
+ * message and fails before any write is attempted). excludeUid lets a
+ * staffUpdate call pass its own uid, so re-saving a User's EXISTING number
+ * back onto themselves is never rejected as "already in use."
+ */
+async function assertPhoneNotTaken(phoneNumber: string, excludeUid?: string): Promise<void> {
+  const holderUid = await getUidByPhone(phoneNumber);
+  if (holderUid && holderUid !== excludeUid) {
+    throw new HttpsError("already-exists", "This phone number is already assigned to another account.");
+  }
 }
 
 /* ──────────────────── HELPER: audit log ─────────────────────────── */
@@ -219,11 +252,11 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Validates the USER-PROFILE fields (department/ratePerDay/workingHours/
- * joiningDate/employeeId/notes/profilePhotoUrl) shared by staffUpdate
- * (admin, any target uid) and userProfileSelfUpdate (self only, narrower
- * whitelist). Throws HttpsError on the first invalid field. Never touches
- * role/active/email/phoneNumber — those keep their own existing validation.
+ * Validates the USER-PROFILE fields (department/post/salaryPerHour/
+ * salaryPerDay/workingHours/joiningDate/employeeId/notes/profilePhotoUrl)
+ * — all staffUpdate-only now (Super Admin). Throws HttpsError on the first
+ * invalid field. Never touches role/active/email/phoneNumber — those keep
+ * their own existing validation.
  */
 function validateProfilePatch(patch: Record<string, unknown>): void {
   if (patch.department !== undefined) {
@@ -233,10 +266,23 @@ function validateProfilePatch(patch: Record<string, unknown>): void {
     }
     patch.department = d || null;
   }
-  if (patch.ratePerDay !== undefined) {
-    const n = patch.ratePerDay;
+  if (patch.post !== undefined) {
+    const p = patch.post;
+    if (p !== null && (typeof p !== "string" || p.length > 200)) {
+      throw new HttpsError("invalid-argument", "post must be a string up to 200 characters.");
+    }
+    patch.post = p === null ? null : String(p).trim() || null;
+  }
+  if (patch.salaryPerHour !== undefined) {
+    const n = patch.salaryPerHour;
     if (n !== null && (typeof n !== "number" || !Number.isFinite(n) || n < 0)) {
-      throw new HttpsError("invalid-argument", "ratePerDay must be a non-negative number.");
+      throw new HttpsError("invalid-argument", "salaryPerHour must be a non-negative number.");
+    }
+  }
+  if (patch.salaryPerDay !== undefined) {
+    const n = patch.salaryPerDay;
+    if (n !== null && (typeof n !== "number" || !Number.isFinite(n) || n < 0)) {
+      throw new HttpsError("invalid-argument", "salaryPerDay must be a non-negative number.");
     }
   }
   if (patch.joiningDate !== undefined) {
@@ -316,13 +362,22 @@ function staffCustomerMirror(
  * mechanism-specific duplicate of this logic elsewhere — this IS the single
  * staff-creation code path.
  *
+ * This is explicitly a TWO-STAGE, compensating-rollback flow, not one
+ * atomic transaction spanning Auth and Firestore (the two systems don't
+ * share a transaction mechanism): (1) create the Auth user — a single
+ * coherent identity, since admin.auth().createUser() itself atomically
+ * enforces email AND phone uniqueness, helped along by the proactive phone
+ * check just before it for a clearer rejection message; (2) write
+ * staff/{uid} + customers/{uid} together in one Firestore batch (atomic
+ * with each other, so the two Firestore docs can never diverge — there is
+ * no "staff created but customer mirror didn't" state to roll back
+ * separately). If step 2 fails, step 1 is compensated by deleting the Auth
+ * user, so no orphan Auth-without-staff account is left behind.
+ *
  * The generated temporary password is NEVER returned or persisted anywhere
  * (not in Firestore, not in the function's response) — only the resulting
  * uid is handed back. Password delivery/reset is a separate, existing
  * concern (see the admin password-reset tooling), out of scope here.
- *
- * On any failure after the Auth user is created, the Auth user is rolled
- * back so no orphan account is left behind.
  */
 export async function provisionStaffAccount(params: {
   displayName: string;
@@ -333,6 +388,14 @@ export async function provisionStaffAccount(params: {
   phoneNumber?: string;
 }): Promise<{ uid: string; staffDoc: Record<string, unknown> }> {
   const { displayName, email, role, createdByUid, password, phoneNumber } = params;
+
+  // Proactive, clear rejection BEFORE creating anything — rather than
+  // relying only on admin.auth().createUser()'s own (still authoritative,
+  // race-safe) uniqueness error, which doesn't distinguish "phone taken"
+  // from "email taken" in its message.
+  if (phoneNumber) {
+    await assertPhoneNotTaken(phoneNumber);
+  }
 
   let authUid: string;
   try {
@@ -417,7 +480,7 @@ export async function provisionStaffAccount(params: {
 
 export const staffCreate = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  const actor = await requireAdmin(request.auth.uid);
+  const actor = await requireSuperAdmin(request.auth.uid);
 
   const { displayName, email, role, password, phoneNumber } = request.data as {
     displayName?: string; email?: string; role?: string; password?: string; phoneNumber?: string;
@@ -446,18 +509,21 @@ export const staffCreate = onCall(async (request) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
- * staffUpdate — update an existing staff member's fields.
+ * staffUpdate — update an existing staff member's fields. Super-Admin-only.
  *
- * Input : { uid: string, updates: { displayName?, email?, role?, active? } }
+ * Input : { uid: string, updates: { displayName?, email?, role?, active?,
+ *           phoneNumber?, post?, department?, salaryPerHour?, salaryPerDay?,
+ *           workingHours?, joiningDate?, employeeId?, notes?,
+ *           mustChangePassword? } }
  * Output: { ok: true }
  *
- * Only allows displayName, email, role, active to be changed.
- * Role change is audited separately as STAFF_ROLE_CHANGE.
+ * Role/email/phone/force-password-change each get their own audit action;
+ * every other field change falls back to the generic STAFF_UPDATE action.
  * ═══════════════════════════════════════════════════════════════════ */
 
 export const staffUpdate = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  const actor = await requireAdmin(request.auth.uid);
+  const actor = await requireSuperAdmin(request.auth.uid);
 
   const { uid, updates } = request.data as { uid?: string; updates?: Record<string, unknown> };
   if (!uid || !updates || typeof updates !== "object") {
@@ -469,13 +535,12 @@ export const staffUpdate = onCall(async (request) => {
   if (!snap.exists) throw new HttpsError("not-found", `Staff doc ${uid} not found.`);
   const before = snap.data()!;
 
-  // Whitelist allowed fields. Admin-only path — every field on the User
-  // Profile is writable here (unlike userProfileSelfUpdate's narrower
-  // self-service subset below), since the caller already passed
-  // requireAdmin() above.
+  // Whitelist allowed fields. Super-Admin-only path (requireSuperAdmin
+  // above) — every staff profile mutation lives here now; there is no
+  // separate, looser tier for any of these fields.
   const allowed = [
-    "displayName", "email", "role", "active", "phoneNumber",
-    "department", "profilePhotoUrl", "ratePerDay", "workingHours",
+    "displayName", "email", "role", "active", "phoneNumber", "post",
+    "department", "profilePhotoUrl", "salaryPerHour", "salaryPerDay", "workingHours",
     "joiningDate", "employeeId", "notes", "mustChangePassword",
   ];
   const patch: Record<string, unknown> = {};
@@ -496,22 +561,13 @@ export const staffUpdate = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "mustChangePassword must be a boolean.");
   }
 
-  // User-Management extension — email change and force-password-change are
-  // Super-Admin-only (every other field above stays on the pre-existing
-  // admin/owner/super_admin tier requireAdmin() already granted). Checked
-  // BEFORE any Auth/Firestore mutation so a rejected call touches nothing.
-  if (("email" in patch || "mustChangePassword" in patch) && actor.role !== "super_admin") {
-    throw new HttpsError("permission-denied", "Only Super Admin can change email or force a password change.");
-  }
-
   validateProfilePatch(patch);
 
   // email lives on the Firebase Auth record (the actual sign-in credential)
   // — staff/{uid}.email below is only a display mirror, exactly like
   // phoneNumber. Applied via the Admin SDK BEFORE the Firestore batch, so
   // the mirror is never written unless the Auth record actually accepted
-  // the change. (Previously this field was written to Firestore ONLY,
-  // silently desyncing staff/{uid} from the real Auth sign-in email.)
+  // the change.
   if (patch.email !== undefined) {
     const rawEmail = String(patch.email ?? "").trim();
     if (!rawEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
@@ -527,13 +583,21 @@ export const staffUpdate = onCall(async (request) => {
 
   // phoneNumber lives on the Firebase Auth record (native phone-sign-in
   // credential) — staff/{uid}.phoneNumber below is only a display mirror.
-  // An empty string clears the number on both. Applied via the Admin SDK
-  // BEFORE the Firestore batch, so the mirror is never written unless the
-  // Auth record actually accepted the change.
+  // An empty string clears the number on both. A non-empty number is
+  // proactively checked against every OTHER Auth user first (excluding
+  // this uid, so re-saving your own existing number is never rejected) —
+  // Firebase Auth's own uniqueness constraint is still the authoritative,
+  // race-safe backstop, but this gives a clear, specific error instead of
+  // ever silently creating a duplicate identity. Applied BEFORE the
+  // Firestore batch, so the mirror is never written unless the Auth
+  // record actually accepted the change.
   if (patch.phoneNumber !== undefined) {
     const raw = String(patch.phoneNumber ?? "").trim();
     if (raw && !E164_RE.test(raw)) {
       throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+    }
+    if (raw) {
+      await assertPhoneNotTaken(raw, uid);
     }
     try {
       await admin.auth().updateUser(uid, { phoneNumber: raw || null });
@@ -1007,18 +1071,18 @@ export const staffResetPassword = onCall(async (request) => {
 
 /* ═══════════════════════════════════════════════════════════════════
  * staffLookupByPhone — resolves which (if any) Auth user currently owns a
- * phone number, so an admin can see who holds a number BEFORE attempting
- * to reassign it (Firebase Auth's own uniqueness constraint would reject
- * the reassignment anyway — this just surfaces who/what that is, rather
- * than only the resulting error, matching the existing admin/owner/
- * super_admin read tier for this page).
+ * phone number, so Super Admin can see who holds a number BEFORE
+ * attempting to reassign it (assertPhoneNotTaken/Firebase Auth's own
+ * uniqueness constraint would reject the reassignment anyway — this just
+ * surfaces who/what that is, rather than only the resulting error).
+ * Super-Admin-only, matching every other staff-mutation-adjacent callable.
  *
  * Input : { phoneNumber: string }
  * Output: { exists: false } | { exists: true, uid, email, disabled, staff }
  * ═══════════════════════════════════════════════════════════════════*/
 export const staffLookupByPhone = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  await requireAdmin(request.auth.uid);
+  await requireSuperAdmin(request.auth.uid);
 
   const { phoneNumber } = request.data as { phoneNumber?: string };
   const trimmed = String(phoneNumber ?? "").trim();
@@ -1045,39 +1109,86 @@ export const staffLookupByPhone = onCall(async (request) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
- * staffCheckAuthExists — live (never persisted) check of whether each
- * given staff/{uid} still has a corresponding Firebase Auth user. A
- * staff/{uid} doc is never auto-created or auto-deleted here — this is a
- * pure read, so the Staff Management UI can hide (not delete) any record
- * whose Auth account was removed outside the app (e.g. via Console),
- * instead of silently showing/editing a doc whose mutations would all now
- * fail server-side. Chunks into groups of 100 (admin.auth().getUsers' own
- * batch limit); the staff collection is tiny by design (same assumption
- * staffBackfillCustomerDocs's 450-doc cap already makes).
+ * staffDelete — permanently removes a staff account: the Firebase Auth
+ * user AND staff/{uid}. Super-Admin-only.
  *
- * Input : { uids: string[] }
- * Output: { authExists: Record<string, boolean> }
+ * Two safety guards (checked before anything is deleted):
+ *   - Self-delete: the caller's own uid is always rejected.
+ *   - Last Owner: if the target's role is 'owner', this refuses to delete
+ *     it when it's the ONLY staff/{uid} with role 'owner' — counted
+ *     regardless of that record's (or any other owner record's) active
+ *     flag, so an inactive duplicate can never be used to sneak past the
+ *     guard and leave zero Owner records of any kind.
+ *
+ * Deliberately NOT one atomic transaction spanning Auth and Firestore —
+ * same compensating-rollback discipline as provisionStaffAccount, just
+ * run in the opposite direction: Firestore first (staff/{uid}, and
+ * customers/{uid} ONLY if it exists and is clearly marked staffLinked —
+ * never a doc that isn't unambiguously this mechanism's own mirror),
+ * since "staff/{uid} gone, Auth account still live" is the safer partial
+ * state (the account simply can't resolve a Flow identity on next sign-in
+ * attempt) than the reverse ("Auth gone, staff/{uid} still claiming to be
+ * a real account" — exactly the orphan state this whole feature removed
+ * tooling for). If the final Auth delete step fails, that's recorded in
+ * the SAME audit entry's `after` field (never masked) and surfaced as an
+ * error — the Firestore side has already genuinely changed by that point,
+ * so reporting success would be dishonest, not because anything is rolled
+ * back. Tolerates the Auth user already being gone (e.g. deleted via
+ * Console previously), so this also doubles as the one remaining manual
+ * cleanup path for a pre-existing orphan — same end state, through the
+ * one mechanism, instead of a second one.
+ *
+ * Input : { uid: string }
+ * Output: { ok: true }
  * ═══════════════════════════════════════════════════════════════════*/
-export const staffCheckAuthExists = onCall(async (request) => {
+export const staffDelete = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  await requireAdmin(request.auth.uid);
+  const actor = await requireSuperAdmin(request.auth.uid);
 
-  const { uids } = request.data as { uids?: unknown };
-  if (!Array.isArray(uids) || uids.length === 0 || !uids.every((u) => typeof u === "string")) {
-    throw new HttpsError("invalid-argument", "uids must be a non-empty array of strings.");
+  const { uid } = request.data as { uid?: string };
+  if (!uid || typeof uid !== "string") {
+    throw new HttpsError("invalid-argument", "uid is required.");
+  }
+  if (uid === request.auth.uid) {
+    throw new HttpsError("failed-precondition", "You cannot delete your own account.");
   }
 
-  const existing = new Set<string>();
-  for (let i = 0; i < uids.length; i += 100) {
-    const chunk = uids.slice(i, i + 100).map((uid: string) => ({ uid }));
-    const result = await admin.auth().getUsers(chunk);
-    for (const u of result.users) existing.add(u.uid);
+  const ref = db.doc(`staff/${uid}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", `Staff doc ${uid} not found.`);
+  const before = snap.data()!;
+
+  if (normalizeStaffRole(before.role) === "owner") {
+    const ownersSnap = await db.collection("staff").where("role", "==", "owner").get();
+    if (ownersSnap.size <= 1) {
+      throw new HttpsError("failed-precondition", "Cannot delete the last remaining Owner account.");
+    }
   }
 
-  const authExists: Record<string, boolean> = {};
-  for (const uid of uids as string[]) authExists[uid] = existing.has(uid);
+  const custRef = db.doc(`customers/${uid}`);
+  const custSnap = await custRef.get();
+  const deleteCustomerMirror = custSnap.exists && custSnap.data()?.staffLinked === true;
 
-  return { authExists };
+  const batch = db.batch();
+  batch.delete(ref);
+  if (deleteCustomerMirror) batch.delete(custRef);
+  await batch.commit();
+
+  try {
+    await admin.auth().deleteUser(uid);
+  } catch (err: any) {
+    if (err?.code !== "auth/user-not-found") {
+      await writeAudit("STAFF_DELETE", "staff", uid, request.auth.uid, actor.name, actor.role,
+        before, { deleted: true, customerMirrorDeleted: deleteCustomerMirror, authDeleteFailed: true });
+      throw new HttpsError("internal", "Staff profile deleted, but the Auth account could not be removed. Contact support.");
+    }
+    // Already gone (e.g. previously deleted via Console) — nothing more to do.
+  }
+
+  await writeAudit("STAFF_DELETE", "staff", uid, request.auth.uid, actor.name, actor.role,
+    before, { deleted: true, customerMirrorDeleted: deleteCustomerMirror });
+
+  return { ok: true };
 });
 
 /* ═══════════════════════════════════════════════════════════════════

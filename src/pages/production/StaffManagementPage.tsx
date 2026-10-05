@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { db, functions } from '../../firebase';
-import { collection, getDocs, doc, updateDoc, query, orderBy, where, limitToLast } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, where, limitToLast } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import {
   Users, Plus, Search, ShieldCheck, XCircle, Loader2, CheckCircle, X, Phone, UserRound, KeyRound,
-  Mail, RotateCcw, Archive, History, Copy, ChevronDown,
+  Mail, RotateCcw, History, Copy, ChevronDown, Trash2, AlertTriangle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { StaffDoc, AuditLogDoc } from '../../types/production';
@@ -19,22 +19,19 @@ type StaffRole = StaffDoc['role'];
 
 export default function StaffManagementPage() {
   // Server-side authorization is already mandatory (firestore.loom.rules'
-  // staff/{uid} read rule + staffCreate/staffUpdate's requireAdmin) — this is
-  // the matching CLIENT-side gate so an ordinary staff member who navigates
-  // here directly sees a clear redirect instead of a broken admin UI whose
-  // Firestore list query would fail silently and whose actions would all be
-  // rejected server-side anyway.
+  // staff/{uid} read rule + staffCreate/staffUpdate/staffDelete's
+  // requireSuperAdmin) — this is the matching CLIENT-side gate so an
+  // ordinary staff member who navigates here directly sees a clear
+  // redirect instead of a broken admin UI.
   const { user } = useAuth();
   const effectiveRole = (user?.staffRole || user?.role || '') as any;
-  const isAuthorized = can(effectiveRole, 'production.staff');
-  // Strict, literal match — never elevated from 'admin' (unlike can()'s
-  // blanket admin/super_admin bypass). Gates ONLY the new privileged
-  // operations added by the User Management extension (email edit,
-  // password reset, force-password-change) — see functions/src/
-  // production.ts's requireSuperAdmin for the server-side mirror of this
-  // exact gate. Every pre-existing admin/owner capability on this page
-  // (role change, activate/deactivate, mobile edit) is unaffected.
-  const isSuperAdmin = String(effectiveRole).toLowerCase() === 'super_admin';
+  const isAuthorized = can(effectiveRole, 'production.staff'); // view-only gate: admin/owner/super_admin
+  // Every MUTATION on this page — create, delete, edit email/mobile/role/
+  // post/salary, activate/deactivate, reset password, force password
+  // change — is Super-Admin-only. Admin/owner keep read-only visibility.
+  // See functions/src/production.ts's requireSuperAdmin for the exact
+  // server-side mirror of this gate.
+  const canManage = can(effectiveRole, 'production.staff.manage');
 
   const [staff, setStaff] = useState<StaffDoc[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,12 +42,6 @@ export default function StaffManagementPage() {
   const [busyUid, setBusyUid] = useState<string | null>(null);
   useScrollLock(showCreateModal);
 
-  // Live (never persisted) Auth-existence map — see
-  // functions/src/production.ts's staffCheckAuthExists. A uid absent from
-  // this map is treated as "still checking" (never silently archived).
-  const [authExists, setAuthExists] = useState<Record<string, boolean>>({});
-  const [showArchived, setShowArchived] = useState(false);
-
   // Edit Email modal state (Super Admin only)
   const [emailTarget, setEmailTarget] = useState<StaffDoc | null>(null);
   const [emailValue, setEmailValue] = useState('');
@@ -58,11 +49,17 @@ export default function StaffManagementPage() {
   const [emailError, setEmailError] = useState('');
   useScrollLock(!!emailTarget);
 
-  // Change Role modal state
+  // Change Role modal state (Super Admin only)
   const [roleTarget, setRoleTarget] = useState<StaffDoc | null>(null);
   const [roleValue, setRoleValue] = useState<StaffRole>('designer');
   const [savingRole, setSavingRole] = useState(false);
   useScrollLock(!!roleTarget);
+
+  // Edit Post modal state (Super Admin only)
+  const [postTarget, setPostTarget] = useState<StaffDoc | null>(null);
+  const [postValue, setPostValue] = useState('');
+  const [savingPost, setSavingPost] = useState(false);
+  useScrollLock(!!postTarget);
 
   // Reset Password (Super Admin only) — the one-time reveal after success
   const [resetTarget, setResetTarget] = useState<StaffDoc | null>(null);
@@ -70,13 +67,18 @@ export default function StaffManagementPage() {
   const [revealedPassword, setRevealedPassword] = useState<{ name: string; password: string } | null>(null);
   useScrollLock(!!resetTarget || !!revealedPassword);
 
+  // Delete (Super Admin only) — permanent, confirm modal
+  const [deleteTarget, setDeleteTarget] = useState<StaffDoc | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  useScrollLock(!!deleteTarget);
+
   // Recent Activity modal (read-only, any viewer of this page)
   const [activityTarget, setActivityTarget] = useState<StaffDoc | null>(null);
   const [activityEntries, setActivityEntries] = useState<AuditLogDoc[]>([]);
   const [loadingActivity, setLoadingActivity] = useState(false);
   useScrollLock(!!activityTarget);
 
-  // Create form state
+  // Create form state (Super Admin only)
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState<StaffRole>('designer');
@@ -84,7 +86,7 @@ export default function StaffManagementPage() {
   const [newPhoneNumber, setNewPhoneNumber] = useState('');
   const newPhoneValid = newPhoneNumber.trim() === '' || isValidE164(newPhoneNumber);
 
-  // Set/Edit Mobile Number modal state
+  // Set/Edit Mobile Number modal state (Super Admin only)
   const [mobileTarget, setMobileTarget] = useState<StaffDoc | null>(null);
   const [mobileValue, setMobileValue] = useState('');
   const [savingMobile, setSavingMobile] = useState(false);
@@ -100,24 +102,7 @@ export default function StaffManagementPage() {
       // from this list.
       const q = query(collection(db, 'staff'), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
-      const docs = snap.docs.map(d => d.data() as StaffDoc);
-      setStaff(docs);
-
-      // Live Auth-existence check (never persisted — see staffCheckAuthExists)
-      // so a staff/{uid} whose Firebase Auth user was removed outside the
-      // app (e.g. via Console) is shown as archived instead of as a normal,
-      // editable account whose mutations would all fail server-side.
-      if (docs.length > 0) {
-        try {
-          const checkFn = httpsCallable(functions, 'staffCheckAuthExists');
-          const res: any = await checkFn({ uids: docs.map(d => d.uid) });
-          setAuthExists(res.data?.authExists || {});
-        } catch (err) {
-          console.error('Failed to check Auth existence:', err);
-          // Fail open to "unknown, assume active" rather than hiding every
-          // row on a transient error — never silently mass-archives.
-        }
-      }
+      setStaff(snap.docs.map(d => d.data() as StaffDoc));
     } catch (err) {
       console.error('Failed to load staff:', err);
     } finally {
@@ -127,7 +112,7 @@ export default function StaffManagementPage() {
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
 
-  // Server-side authorization (firestore.loom.rules + requireAdmin) is the
+  // Server-side authorization (firestore.loom.rules + requireStaff) is the
   // real boundary; this is only the matching client-side redirect so an
   // ordinary staff member never sees the admin UI at all.
   if (!isAuthorized) {
@@ -143,14 +128,13 @@ export default function StaffManagementPage() {
 
     try {
       const staffCreateFn = httpsCallable(functions, 'staffCreate');
-      const result = await staffCreateFn({
+      await staffCreateFn({
         displayName: newName.trim(),
         email: newEmail.trim(),
         role: newRole,
         password: newPassword.trim() || undefined,
         phoneNumber: newPhoneNumber.trim() || undefined,
       });
-      const uid = (result.data as any)?.uid || '';
 
       setToast({
         type: 'success',
@@ -203,8 +187,9 @@ export default function StaffManagementPage() {
       // Proactively resolve who currently holds this number BEFORE
       // attempting the update, so a conflict is reported clearly (who has
       // it) rather than only as Firebase Auth's own after-the-fact
-      // "already in use" error (still the fallback below if this check
-      // itself fails or races).
+      // "already in use" error. staffUpdate's own assertPhoneNotTaken
+      // check is the real, race-safe enforcement — this is just a
+      // friendlier, earlier message for the common case.
       if (value) {
         const lookupFn = httpsCallable(functions, 'staffLookupByPhone');
         const lookupRes: any = await lookupFn({ phoneNumber: value });
@@ -222,10 +207,10 @@ export default function StaffManagementPage() {
       setMobileValue('');
       await loadStaff();
     } catch (err: any) {
-      // Firebase Auth already enforces phone-number uniqueness across
-      // accounts — its own error message (e.g. "already in use by another
-      // user") surfaces here as-is if the proactive check above didn't
-      // already catch it (e.g. a race, or the lookup call itself failing).
+      // Firebase Auth's own uniqueness constraint (via assertPhoneNotTaken
+      // server-side) surfaces here as-is if the proactive check above
+      // didn't already catch it (e.g. a race, or the lookup call itself
+      // failing) — never silently creates a duplicate identity.
       setToast({ type: 'error', message: err.message || 'Failed to update mobile number.' });
     } finally {
       setSavingMobile(false);
@@ -267,7 +252,7 @@ export default function StaffManagementPage() {
     }
   };
 
-  // ── Change Role (existing admin/owner/super_admin tier, unchanged) ──
+  // ── Change Role (Super Admin only) ──
   const openRoleModal = (s: StaffDoc) => {
     if (busyUid) return;
     setRoleValue(s.role);
@@ -291,6 +276,33 @@ export default function StaffManagementPage() {
       setToast({ type: 'error', message: err.message || 'Failed to change role.' });
     } finally {
       setSavingRole(false);
+    }
+  };
+
+  // ── Edit Post (Super Admin only) — job title, separate from role ──
+  const openPostModal = (s: StaffDoc) => {
+    if (busyUid) return;
+    setPostValue(s.post || '');
+    setPostTarget(s);
+  };
+  const closePostModal = () => {
+    if (savingPost) return;
+    setPostTarget(null);
+  };
+  const savePost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!postTarget) return;
+    setSavingPost(true);
+    try {
+      const staffUpdateFn = httpsCallable(functions, 'staffUpdate');
+      await staffUpdateFn({ uid: postTarget.uid, updates: { post: postValue.trim() || null } });
+      setToast({ type: 'success', message: `Post updated for ${postTarget.displayName}.` });
+      setPostTarget(null);
+      await loadStaff();
+    } catch (err: any) {
+      setToast({ type: 'error', message: err.message || 'Failed to update post.' });
+    } finally {
+      setSavingPost(false);
     }
   };
 
@@ -325,6 +337,24 @@ export default function StaffManagementPage() {
       setToast({ type: 'error', message: err.message || 'Update failed.' });
     } finally {
       setBusyUid(null);
+    }
+  };
+
+  // ── Permanently delete (Super Admin only) ──
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const deleteFn = httpsCallable(functions, 'staffDelete');
+      await deleteFn({ uid: deleteTarget.uid });
+      setToast({ type: 'success', message: `${deleteTarget.displayName} permanently deleted.` });
+      setDeleteTarget(null);
+      await loadStaff();
+    } catch (err: any) {
+      // Surfaces the self-delete / last-Owner safety-guard messages as-is.
+      setToast({ type: 'error', message: err.message || 'Failed to delete staff account.' });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -367,13 +397,7 @@ export default function StaffManagementPage() {
     }
   };
 
-  // A uid absent from the authExists map is treated as visible (still
-  // checking, or the check failed open) — never hidden by default.
-  const isArchived = (s: StaffDoc) => authExists[s.uid] === false;
-  const visibleStaff = staff.filter(s => !isArchived(s));
-  const archivedStaff = staff.filter(isArchived);
-
-  const filtered = visibleStaff.filter(s =>
+  const filtered = staff.filter(s =>
     s.displayName.toLowerCase().includes(searchTerm.toLowerCase()) ||
     s.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
     s.role.toLowerCase().includes(searchTerm.toLowerCase())
@@ -384,15 +408,19 @@ export default function StaffManagementPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
           <h1 className="text-2xl font-display text-black tracking-wide">Staff Management</h1>
-          <p className="text-xs text-gray-500 font-sans mt-1">Production staff roles and access control</p>
+          <p className="text-xs text-gray-500 font-sans mt-1">
+            {canManage ? 'Production staff roles and access control' : 'Production staff roles and access control (read-only)'}
+          </p>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-5 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 transition-colors"
-        >
-          <Plus size={16} />
-          Add Staff
-        </button>
+        {canManage && (
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-2 px-5 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <Plus size={16} />
+            Add Staff
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -427,6 +455,7 @@ export default function StaffManagementPage() {
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">UID</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Email</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Mobile</th>
+                  <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Post</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Role</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Status</th>
                   <th className="text-left text-[10px] font-bold uppercase tracking-widest text-gray-400 px-6 py-4">Password</th>
@@ -456,15 +485,34 @@ export default function StaffManagementPage() {
                     <td className="px-6 py-4 text-sm text-gray-500">{s.email}</td>
                     <td className="px-6 py-4 text-sm text-gray-500">{s.phoneNumber || '—'}</td>
                     <td className="px-6 py-4">
-                      <button
-                        onClick={() => openRoleModal(s)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-[10px] font-bold uppercase tracking-widest rounded-md text-gray-600 transition-colors"
-                        title="Change role"
-                      >
-                        <ShieldCheck size={12} />
-                        {roleLabel(s.role)}
-                        <ChevronDown size={10} />
-                      </button>
+                      {canManage ? (
+                        <button
+                          onClick={() => openPostModal(s)}
+                          className="text-xs text-gray-600 hover:text-black transition-colors"
+                        >
+                          {s.post || <span className="text-gray-400">— set post —</span>}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-500">{s.post || '—'}</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {canManage ? (
+                        <button
+                          onClick={() => openRoleModal(s)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-[10px] font-bold uppercase tracking-widest rounded-md text-gray-600 transition-colors"
+                          title="Change role"
+                        >
+                          <ShieldCheck size={12} />
+                          {roleLabel(s.role)}
+                          <ChevronDown size={10} />
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 text-[10px] font-bold uppercase tracking-widest rounded-md text-gray-600">
+                          <ShieldCheck size={12} />
+                          {roleLabel(s.role)}
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest rounded-md ${
@@ -483,7 +531,7 @@ export default function StaffManagementPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right whitespace-nowrap">
-                      <div className="flex flex-wrap justify-end gap-1 max-w-xs ml-auto">
+                      <div className="flex flex-wrap justify-end gap-1 max-w-sm ml-auto">
                         <Link
                           to={`/production/profile/${s.uid}`}
                           className="text-xs font-medium px-3 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors inline-flex items-center gap-1"
@@ -496,14 +544,16 @@ export default function StaffManagementPage() {
                         >
                           <History size={12} /> Activity
                         </button>
-                        <button
-                          onClick={() => openMobileModal(s)}
-                          disabled={busyUid === s.uid}
-                          className="text-xs font-medium px-3 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
-                        >
-                          <Phone size={12} /> {s.phoneNumber ? 'Edit Mobile' : 'Set Mobile'}
-                        </button>
-                        {isSuperAdmin && (
+                        {canManage && (
+                          <button
+                            onClick={() => openMobileModal(s)}
+                            disabled={busyUid === s.uid}
+                            className="text-xs font-medium px-3 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            <Phone size={12} /> {s.phoneNumber ? 'Edit Mobile' : 'Set Mobile'}
+                          </button>
+                        )}
+                        {canManage && (
                           <button
                             onClick={() => openEmailModal(s)}
                             disabled={busyUid === s.uid}
@@ -512,7 +562,7 @@ export default function StaffManagementPage() {
                             <Mail size={12} /> Edit Email
                           </button>
                         )}
-                        {isSuperAdmin && (
+                        {canManage && (
                           <button
                             onClick={() => setResetTarget(s)}
                             disabled={busyUid === s.uid}
@@ -521,7 +571,7 @@ export default function StaffManagementPage() {
                             <RotateCcw size={12} /> Reset Password
                           </button>
                         )}
-                        {isSuperAdmin && !s.mustChangePassword && (
+                        {canManage && !s.mustChangePassword && (
                           <button
                             onClick={() => forcePasswordChange(s)}
                             disabled={busyUid === s.uid}
@@ -530,17 +580,28 @@ export default function StaffManagementPage() {
                             {busyUid === s.uid ? <Loader2 size={12} className="animate-spin" /> : <KeyRound size={12} />} Force Change
                           </button>
                         )}
-                        <button
-                          onClick={() => toggleActive(s)}
-                          disabled={busyUid === s.uid}
-                          className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 ${
-                            s.active
-                              ? 'text-red-600 hover:bg-red-50'
-                              : 'text-emerald-600 hover:bg-emerald-50'
-                          }`}
-                        >
-                          {busyUid === s.uid ? <Loader2 size={12} className="inline animate-spin" /> : (s.active ? 'Deactivate' : 'Activate')}
-                        </button>
+                        {canManage && (
+                          <button
+                            onClick={() => toggleActive(s)}
+                            disabled={busyUid === s.uid}
+                            className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+                              s.active
+                                ? 'text-red-600 hover:bg-red-50'
+                                : 'text-emerald-600 hover:bg-emerald-50'
+                            }`}
+                          >
+                            {busyUid === s.uid ? <Loader2 size={12} className="inline animate-spin" /> : (s.active ? 'Deactivate' : 'Activate')}
+                          </button>
+                        )}
+                        {canManage && (
+                          <button
+                            onClick={() => setDeleteTarget(s)}
+                            disabled={busyUid === s.uid}
+                            className="text-xs font-medium px-3 py-1.5 rounded-lg text-red-600 hover:bg-red-50 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            <Trash2 size={12} /> Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -550,58 +611,6 @@ export default function StaffManagementPage() {
           </div>
         )}
       </div>
-
-      {/* Archived — staff/{uid} docs whose Firebase Auth user no longer
-          exists (e.g. deleted via Console). Never auto-deleted: the record,
-          its audit history, and any production references stay intact —
-          this view is read-only and excluded from the normal list above. */}
-      {archivedStaff.length > 0 && (
-        <div className="mt-6">
-          <button
-            onClick={() => setShowArchived(v => !v)}
-            className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-gray-500 hover:text-black transition-colors mb-3"
-          >
-            <Archive size={14} />
-            Archived ({archivedStaff.length}) — Auth account no longer exists
-            <ChevronDown size={12} className={`transition-transform ${showArchived ? 'rotate-180' : ''}`} />
-          </button>
-          {showArchived && (
-            <div className="bg-amber-50/50 border border-amber-100 rounded-2xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-amber-100">
-                      <th className="text-left text-[10px] font-bold uppercase tracking-widest text-amber-700 px-6 py-3">Name</th>
-                      <th className="text-left text-[10px] font-bold uppercase tracking-widest text-amber-700 px-6 py-3">UID</th>
-                      <th className="text-left text-[10px] font-bold uppercase tracking-widest text-amber-700 px-6 py-3">Email</th>
-                      <th className="text-left text-[10px] font-bold uppercase tracking-widest text-amber-700 px-6 py-3">Role</th>
-                      <th className="text-right text-[10px] font-bold uppercase tracking-widest text-amber-700 px-6 py-3">History</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {archivedStaff.map(s => (
-                      <tr key={s.uid} className="border-b border-amber-100/60">
-                        <td className="px-6 py-3 text-sm text-amber-900">{s.displayName}</td>
-                        <td className="px-6 py-3 text-xs font-mono text-amber-700">{s.uid}</td>
-                        <td className="px-6 py-3 text-sm text-amber-800">{s.email}</td>
-                        <td className="px-6 py-3 text-xs uppercase tracking-widest text-amber-700">{roleLabel(s.role)}</td>
-                        <td className="px-6 py-3 text-right">
-                          <button
-                            onClick={() => openActivity(s)}
-                            className="text-xs font-medium px-3 py-1.5 rounded-lg text-amber-700 hover:bg-amber-100 transition-colors inline-flex items-center gap-1"
-                          >
-                            <History size={12} /> Activity
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Create Modal */}
       <AnimatePresence>
@@ -806,7 +815,7 @@ export default function StaffManagementPage() {
         )}
       </AnimatePresence>
 
-      {/* Change Role Modal (existing admin/owner/super_admin tier, unchanged) */}
+      {/* Change Role Modal (Super Admin only) */}
       <AnimatePresence>
         {roleTarget && (
           <motion.div
@@ -851,6 +860,61 @@ export default function StaffManagementPage() {
                     className="flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
                     {savingRole ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
                     {savingRole ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Edit Post Modal (Super Admin only) */}
+      <AnimatePresence>
+        {postTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={closePostModal}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+                <h2 className="text-lg font-display text-black">Edit Post</h2>
+                <button onClick={closePostModal} className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+              <form onSubmit={savePost} className="p-6 space-y-5">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
+                    {postTarget.displayName}
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={postValue}
+                    onChange={e => setPostValue(e.target.value)}
+                    placeholder="e.g. Production Manager"
+                    className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">Job title — separate from Role ({roleLabel(postTarget.role)}), purely descriptive.</p>
+                </div>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={closePostModal}
+                    className="px-5 py-2.5 text-sm text-gray-500 hover:text-black transition-colors">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={savingPost}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                    {savingPost ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                    {savingPost ? 'Saving…' : 'Save'}
                   </button>
                 </div>
               </form>
@@ -940,6 +1004,52 @@ export default function StaffManagementPage() {
                   <button type="button" onClick={() => setRevealedPassword(null)}
                     className="flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 transition-colors">
                     Done
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Permanently Delete — confirm (Super Admin only) */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={() => !deleting && setDeleteTarget(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+                <h2 className="text-lg font-display text-red-600 flex items-center gap-2">
+                  <AlertTriangle size={18} /> Delete Staff Account
+                </h2>
+                <button onClick={() => !deleting && setDeleteTarget(null)} className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="p-6 space-y-5">
+                <p className="text-sm text-gray-600">
+                  This permanently deletes <strong>{deleteTarget.displayName}</strong>'s sign-in account and staff profile. This cannot be undone — they will no longer be able to log in. Their historical audit log entries are preserved.
+                </p>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={() => setDeleteTarget(null)} disabled={deleting}
+                    className="px-5 py-2.5 text-sm text-gray-500 hover:text-black transition-colors disabled:opacity-50">
+                    Cancel
+                  </button>
+                  <button type="button" onClick={confirmDelete} disabled={deleting}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors">
+                    {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    {deleting ? 'Deleting…' : 'Permanently Delete'}
                   </button>
                 </div>
               </div>

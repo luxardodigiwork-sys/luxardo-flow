@@ -84,6 +84,7 @@ type Module =
   | 'production.reports.export'
   | 'production.audit'
   | 'production.staff'
+  | 'production.staff.manage'
   | 'production.movement';
 
 const MATRIX: Record<Module, Role[]> = {
@@ -171,6 +172,11 @@ const MATRIX: Record<Module, Role[]> = {
   'production.reports.export':       ['super_admin','owner'],
   'production.audit':                ['super_admin','admin','owner'],
   'production.staff':                ['super_admin','admin','owner'],
+  // Strict, matching staffCreate/staffUpdate/staffDelete/staffResetPassword/
+  // staffLookupByPhone's backend gate (requireSuperAdmin) exactly — admin
+  // and owner keep 'production.staff' (read-only visibility) above, but
+  // every staff-account MUTATION is Super Admin only.
+  'production.staff.manage':         ['super_admin'],
   'production.movement':             ['super_admin','admin','owner','pm','dispatch','guard','tailor'],
 };
 
@@ -196,6 +202,7 @@ const STRICT_MODULES = new Set<Module>([
   'production.tailor.startComplete',
   'production.store.out',
   'production.store.out.issue',
+  'production.staff.manage',
 ]);
 
 /**

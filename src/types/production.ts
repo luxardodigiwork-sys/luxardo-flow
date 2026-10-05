@@ -645,22 +645,28 @@ export interface StaffDoc {
   updatedAt: string;
   createdBy: string;
 
-  // ── User Profile fields (additive, optional, admin-provisioned unless
-  // noted as self-editable) ──────────────────────────────────────────
-  /** https URL into Storage `production/profiles/{uid}/...`. Self-editable. */
+  // ── User Profile fields (additive, optional) — ALL Super-Admin-only now;
+  // there is no self-editable subset (staff self-service is password
+  // change only, via staffChangePassword/ChangePasswordPage) ──────────
+  /** https URL into Storage `production/profiles/{uid}/...`. */
   profilePhotoUrl?: string | null;
-  /** One of Department above. Admin-only — never grants permissions. */
+  /** Job title, distinct from `role` (the RBAC enum) — e.g. "Production
+   *  Manager" where role is "pm". Purely descriptive; never consulted by
+   *  any authorization check. */
+  post?: string | null;
+  /** One of Department above. Never grants permissions. */
   department?: Department | null;
-  /** ₹/day. Admin-only (business-sensitive). */
-  ratePerDay?: number | null;
-  /** Admin-only. */
+  /** ₹/hour. Business-sensitive. */
+  salaryPerHour?: number | null;
+  /** ₹/day. Business-sensitive. */
+  salaryPerDay?: number | null;
   workingHours?: WorkingHours | null;
-  /** ISO date (YYYY-MM-DD). Admin-only. */
+  /** ISO date (YYYY-MM-DD). */
   joiningDate?: string | null;
-  /** Free-form internal ID, distinct from the Firebase uid. Admin-only. */
+  /** Free-form internal ID, distinct from the Firebase uid. */
   employeeId?: string | null;
-  /** Admin-only field AND admin-only visibility — never rendered to the
-   *  User themself, only to admin/super_admin/owner viewing the profile. */
+  /** Editable by Super Admin only; viewable by admin/super_admin/owner —
+   *  never rendered to the User themself. */
   notes?: string | null;
   lastActiveAt?: string | null;
 }
@@ -727,6 +733,7 @@ export type AuditAction =
   | "STAFF_PASSWORD_RESET" // Super-Admin-initiated, via staffResetPassword (never logs the generated password)
   | "STAFF_FORCE_PASSWORD_CHANGE" // Super-Admin sets mustChangePassword=true on another User, via staffUpdate
   | "STAFF_PROVISION_ORPHAN" // Auth user created but its staff/customers write AND the compensating delete both failed — needs manual review.
+  | "STAFF_DELETE" // Super-Admin-initiated, via staffDelete (permanent — Auth user + staff/{uid} removed; this audit entry is the only remaining record)
   | "STAFF_BACKFILL"
   | "REPORT_EXPORT";
 

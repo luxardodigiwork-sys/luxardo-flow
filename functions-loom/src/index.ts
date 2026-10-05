@@ -23,15 +23,15 @@ export {
   nextId,
   staffCreate,
   staffUpdate,
+  staffDelete,
   staffChangePassword,
   staffBackfillCustomerDocs,
   staffResetPassword,
   staffLookupByPhone,
-  staffCheckAuthExists,
   karigarCreate,
   karigarUpdate,
 } from "../../functions/src/production";
-export { userProfileSelfUpdate, mobileResetLookup, mobileResetSendOtp } from "../../functions/src/production";
+export { mobileResetLookup, mobileResetSendOtp } from "../../functions/src/production";
 
 /* P0-2 — Privileged (Owner/Admin/Super Admin) Mobile Number + Password
  * login, and (V1 Auth Stabilization) the same mechanism opened to the 8

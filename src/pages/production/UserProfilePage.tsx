@@ -17,27 +17,28 @@ import {
 /**
  * The authoritative LUXARDO FLOW User Profile page.
  *
- * /production/profile        — the signed-in User's own profile.
- * /production/profile/:uid   — an admin/owner viewing/editing another
- *                               User's profile (requires production.staff).
- *
- * Self-editable (any signed-in User, via userProfileSelfUpdate — low-risk
- * personal fields only): display name, photo, mobile number.
- * Admin-only (via the existing admin-gated staffUpdate): department,
- * rate/day, working hours, joining date, employee ID, notes. Role stays
- * read-only here entirely — role changes go through Staff Management only,
- * unchanged by this page.
+ * /production/profile        — the signed-in User's own profile (READ-ONLY —
+ *                               staff self-service is password change only,
+ *                               via ChangePasswordPage/staffChangePassword;
+ *                               nothing on this page is self-editable).
+ * /production/profile/:uid   — requires production.staff to VIEW (admin/
+ *                               owner/super_admin), but requires
+ *                               production.staff.manage (Super Admin only)
+ *                               to EDIT anything. Admin/owner viewing
+ *                               someone else see the exact same read-only
+ *                               rendering a self-viewer does.
  */
 export default function UserProfilePage() {
   const { uid: paramUid } = useParams<{ uid?: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const effectiveRole = (user?.staffRole || user?.role || '') as any;
-  const isAdminViewer = can(effectiveRole, 'production.staff');
+  const isAdminViewer = can(effectiveRole, 'production.staff'); // view-only gate
   const targetUid = paramUid || user?.id || '';
   const isSelf = !!user && targetUid === user.id;
   const canView = isSelf || isAdminViewer;
-  const canEdit = canView; // same gate today — self edits own subset, admin edits everything
+  // The ONLY editable case: Super Admin viewing someone else's profile.
+  const canEdit = !isSelf && can(effectiveRole, 'production.staff.manage');
 
   const [profile, setProfile] = useState<StaffDoc | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,8 +52,10 @@ export default function UserProfilePage() {
   const [displayName, setDisplayName] = useState('');
   const [phoneValue, setPhoneValue] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
+  const [post, setPost] = useState('');
   const [department, setDepartment] = useState('');
-  const [ratePerDay, setRatePerDay] = useState('');
+  const [salaryPerHour, setSalaryPerHour] = useState('');
+  const [salaryPerDay, setSalaryPerDay] = useState('');
   const [whStart, setWhStart] = useState('');
   const [whEnd, setWhEnd] = useState('');
   const [joiningDate, setJoiningDate] = useState('');
@@ -73,8 +76,10 @@ export default function UserProfilePage() {
       setDisplayName(data.displayName || '');
       setPhoneValue(data.phoneNumber || '');
       setPhotoUrl(data.profilePhotoUrl || '');
+      setPost(data.post || '');
       setDepartment(data.department || '');
-      setRatePerDay(data.ratePerDay != null ? String(data.ratePerDay) : '');
+      setSalaryPerHour(data.salaryPerHour != null ? String(data.salaryPerHour) : '');
+      setSalaryPerDay(data.salaryPerDay != null ? String(data.salaryPerDay) : '');
       setWhStart(data.workingHours?.start || '');
       setWhEnd(data.workingHours?.end || '');
       setJoiningDate(data.joiningDate || '');
@@ -90,29 +95,32 @@ export default function UserProfilePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // canEdit is already "Super Admin viewing someone else" — staffUpdate is
+  // the only mutation path reachable from this page now.
   const callUpdate = async (updates: Record<string, unknown>) => {
-    const fn = httpsCallable(functions, isAdminViewer ? 'staffUpdate' : 'userProfileSelfUpdate');
-    const payload = isAdminViewer ? { uid: targetUid, updates } : { updates };
-    await fn(payload);
+    const fn = httpsCallable(functions, 'staffUpdate');
+    await fn({ uid: targetUid, updates });
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phoneValid) return;
+    if (!canEdit || !phoneValid) return;
     setSaving(true);
     setToast(null);
     try {
-      const updates: Record<string, unknown> = { displayName: displayName.trim() };
+      const updates: Record<string, unknown> = {
+        displayName: displayName.trim(),
+        post: post.trim() || null,
+        department: department || null,
+        salaryPerHour: salaryPerHour === '' ? null : Number(salaryPerHour),
+        salaryPerDay: salaryPerDay === '' ? null : Number(salaryPerDay),
+        workingHours: whStart && whEnd ? { start: whStart, end: whEnd } : null,
+        joiningDate: joiningDate || null,
+        employeeId: employeeId.trim() || null,
+        notes: notes.trim() || null,
+      };
       if (phoneValue.trim() !== (profile?.phoneNumber || '')) {
         updates.phoneNumber = phoneValue.trim();
-      }
-      if (isAdminViewer) {
-        updates.department = department || null;
-        updates.ratePerDay = ratePerDay === '' ? null : Number(ratePerDay);
-        updates.workingHours = whStart && whEnd ? { start: whStart, end: whEnd } : null;
-        updates.joiningDate = joiningDate || null;
-        updates.employeeId = employeeId.trim() || null;
-        updates.notes = notes.trim() || null;
       }
       await callUpdate(updates);
       setToast({ type: 'success', message: 'Profile updated.' });
@@ -272,13 +280,23 @@ export default function UserProfilePage() {
           </div>
         </div>
 
-        {/* Work details — admin-only editable; read-only display for self */}
+        {/* Work details — Super-Admin-editable only; read-only for everyone else */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
           <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4 flex items-center gap-1.5">
             <Briefcase size={12} /> Work Details
-            {!isAdminViewer && <span className="normal-case font-normal text-gray-400">(set by an administrator)</span>}
+            {!canEdit && <span className="normal-case font-normal text-gray-400">(set by Super Admin)</span>}
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Post</label>
+              {canEdit ? (
+                <input type="text" value={post} onChange={(e) => setPost(e.target.value)}
+                  placeholder="e.g. Production Manager"
+                  className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+              ) : (
+                <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl">{profile.post || '— not set —'}</p>
+              )}
+            </div>
             <div>
               <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Role</label>
               <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl">{roleLabel(profile.role)}</p>
@@ -286,7 +304,7 @@ export default function UserProfilePage() {
             </div>
             <div>
               <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Department</label>
-              {isAdminViewer ? (
+              {canEdit ? (
                 <select value={department} onChange={(e) => setDepartment(e.target.value)}
                   className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all">
                   <option value="">— not set —</option>
@@ -300,21 +318,33 @@ export default function UserProfilePage() {
             </div>
             <div>
               <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
-                <IndianRupee size={12} /> Rate / Day
+                <IndianRupee size={12} /> Salary / Hour
               </label>
-              {isAdminViewer ? (
-                <input type="number" min={0} step="0.01" value={ratePerDay} onChange={(e) => setRatePerDay(e.target.value)}
+              {canEdit ? (
+                <input type="number" min={0} step="0.01" value={salaryPerHour} onChange={(e) => setSalaryPerHour(e.target.value)}
                   placeholder="— not set —"
                   className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
               ) : (
-                <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl">{profile.ratePerDay != null ? `₹${profile.ratePerDay}` : '— not set —'}</p>
+                <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl">{profile.salaryPerHour != null ? `₹${profile.salaryPerHour}` : '— not set —'}</p>
+              )}
+            </div>
+            <div>
+              <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
+                <IndianRupee size={12} /> Salary / Day
+              </label>
+              {canEdit ? (
+                <input type="number" min={0} step="0.01" value={salaryPerDay} onChange={(e) => setSalaryPerDay(e.target.value)}
+                  placeholder="— not set —"
+                  className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+              ) : (
+                <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl">{profile.salaryPerDay != null ? `₹${profile.salaryPerDay}` : '— not set —'}</p>
               )}
             </div>
             <div>
               <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
                 <Calendar size={12} /> Joining Date
               </label>
-              {isAdminViewer ? (
+              {canEdit ? (
                 <input type="date" value={joiningDate} onChange={(e) => setJoiningDate(e.target.value)}
                   className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
               ) : (
@@ -325,7 +355,7 @@ export default function UserProfilePage() {
               <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
                 <Hash size={12} /> Employee ID
               </label>
-              {isAdminViewer ? (
+              {canEdit ? (
                 <input type="text" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}
                   placeholder="— not set —"
                   className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
@@ -337,7 +367,7 @@ export default function UserProfilePage() {
               <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
                 <Clock size={12} /> Working Hours
               </label>
-              {isAdminViewer ? (
+              {canEdit ? (
                 <div className="flex items-center gap-2">
                   <input type="time" value={whStart} onChange={(e) => setWhStart(e.target.value)}
                     className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
@@ -354,15 +384,19 @@ export default function UserProfilePage() {
           </div>
         </div>
 
-        {/* Notes — admin-only visibility AND editability */}
+        {/* Notes — viewable by admin/owner/super_admin (unchanged visibility), editable by Super Admin only */}
         {isAdminViewer && (
           <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6">
             <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-4 flex items-center gap-1.5">
-              <FileText size={12} /> Notes <span className="normal-case font-normal text-gray-400">(admin-only, never shown to the User)</span>
+              <FileText size={12} /> Notes <span className="normal-case font-normal text-gray-400">(never shown to the User)</span>
             </h2>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
-              placeholder="Internal notes…"
-              className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+            {canEdit ? (
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
+                placeholder="Internal notes…"
+                className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
+            ) : (
+              <p className="text-sm text-gray-700 px-4 py-3 bg-gray-50 rounded-xl whitespace-pre-wrap">{profile.notes || '— not set —'}</p>
+            )}
           </div>
         )}
 
