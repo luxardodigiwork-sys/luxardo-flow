@@ -118,7 +118,7 @@ function ProductionLayoutContent() {
       {/* ── Desktop Sidebar ── */}
       <aside className={`w-64 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20 border-r ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
         <div className={`p-8 border-b flex flex-col justify-center min-h-[100px] shrink-0 ${isDark ? 'border-gray-800' : 'border-gray-100'}`}>
-          <FlowLogo size="md" />
+          <FlowLogo size="md" variant={isDark ? 'inverse' : 'default'} />
           {/* Persistent role identity (V1 Stabilization Step 2) — sourced
               from the same authenticated staff identity every nav item
               below is already filtered by (effectiveRole), never from the
@@ -210,7 +210,7 @@ function ProductionLayoutContent() {
             >
               <div className={`p-6 border-b flex justify-between items-center shrink-0 ${isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'}`}>
                 <div>
-                  <FlowLogo size="sm" />
+                  <FlowLogo size="sm" variant={isDark ? 'inverse' : 'default'} />
                   <span className="inline-flex items-center mt-2 px-2 py-0.5 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded-md">
                     {roleBadgeLabel(effectiveRole)}
                   </span>
