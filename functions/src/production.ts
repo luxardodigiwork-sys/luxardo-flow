@@ -1109,6 +1109,489 @@ export const staffLookupByPhone = onCall(async (request) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
+ * staffLookupIdentity — resolves an email and/or phone number to the
+ * Firebase Auth account(s) they belong to, and whether a staff/{uid}
+ * profile already exists for the resolved uid. Super-Admin-only.
+ * Read-only — the first step of "Add Staff", so a Super Admin can tell,
+ * BEFORE creating anything, which of four situations applies:
+ *   - neither identifier resolves to an Auth account -> create new
+ *     (the existing staffCreate flow, unchanged).
+ *   - resolves to ONE Auth account with no staff/{uid} doc yet ->
+ *     Link Existing Account (staffLinkExistingAccount below).
+ *   - resolves to an Auth account that ALREADY has a staff/{uid} doc ->
+ *     edit the existing row instead of creating a duplicate.
+ *   - email and phone resolve to TWO DIFFERENT Auth accounts -> a
+ *     conflict the caller must never silently resolve; report both
+ *     uids and let the Super Admin link one identifier at a time.
+ *
+ * Input : { email?: string, phoneNumber?: string } (at least one)
+ * Output: { found: false }
+ *       | { found: true, conflict: true, emailUid, emailEmail,
+ *           phoneUid, phoneDisplayName, phoneNumberMaskedLast4 }
+ *       | { found: true, conflict: false, uid, email, phoneNumber,
+ *           displayName, disabled, existingStaffDoc: StaffDoc|null }
+ * ═══════════════════════════════════════════════════════════════════*/
+export const staffLookupIdentity = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  await requireSuperAdmin(request.auth.uid);
+
+  const { email, phoneNumber } = request.data as { email?: string; phoneNumber?: string };
+  const trimmedEmail = email ? String(email).trim().toLowerCase() : "";
+  const trimmedPhone = phoneNumber ? String(phoneNumber).trim() : "";
+
+  if (!trimmedEmail && !trimmedPhone) {
+    throw new HttpsError("invalid-argument", "email or phoneNumber is required.");
+  }
+  if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    throw new HttpsError("invalid-argument", "email must be a valid address.");
+  }
+  if (trimmedPhone && !E164_RE.test(trimmedPhone)) {
+    throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+  }
+
+  const emailUser = trimmedEmail
+    ? await admin.auth().getUserByEmail(trimmedEmail).catch(() => null)
+    : null;
+  const phoneUser = trimmedPhone
+    ? await admin.auth().getUserByPhoneNumber(trimmedPhone).catch(() => null)
+    : null;
+
+  if (!emailUser && !phoneUser) {
+    return { found: false };
+  }
+
+  // Two DIFFERENT Auth accounts — never silently resolved to one. This is
+  // the exact situation a two-identity reconciliation (e.g. one account
+  // holding the intended email, another holding the intended phone
+  // number) must surface rather than merge.
+  if (emailUser && phoneUser && emailUser.uid !== phoneUser.uid) {
+    return {
+      found: true,
+      conflict: true,
+      emailUid: emailUser.uid,
+      emailEmail: emailUser.email ?? null,
+      phoneUid: phoneUser.uid,
+      phoneDisplayName: phoneUser.displayName ?? null,
+      phoneNumberMaskedLast4: trimmedPhone.slice(-4),
+    };
+  }
+
+  const resolved = emailUser ?? phoneUser;
+  if (!resolved) {
+    return { found: false }; // unreachable; keeps TS control-flow happy
+  }
+
+  const staffSnap = await db.doc(`staff/${resolved.uid}`).get();
+
+  return {
+    found: true,
+    conflict: false,
+    uid: resolved.uid,
+    email: resolved.email ?? null,
+    phoneNumber: resolved.phoneNumber ?? null,
+    displayName: resolved.displayName ?? null,
+    disabled: resolved.disabled,
+    existingStaffDoc: staffSnap.exists ? staffSnap.data() : null,
+  };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffLinkExistingAccount — attaches a NEW staff/{uid} profile to an
+ * EXISTING Firebase Auth account (one staffLookupIdentity has already
+ * resolved), instead of creating a new Auth user. Super-Admin-only.
+ *
+ * The ONE structural difference from staffCreate: no
+ * admin.auth().createUser() call, no password. Everything else — role/
+ * profile-field validation, the customers/{uid} mirror, audit logging —
+ * matches staffCreate/staffUpdate exactly, so a linked account behaves
+ * identically to a freshly-created one everywhere else in the app.
+ *
+ * Guarded against ever fabricating an identity: admin.auth().getUser(uid)
+ * MUST succeed first — this can never write a staff/{uid} doc for a uid
+ * that isn't a real, already-existing Auth account. `email` is read from
+ * the Auth record itself (never from caller input), so it can never
+ * drift from the real credential. Does NOT touch mustChangePassword or
+ * the password — this flow never generates or rotates a credential; use
+ * staffResetPassword separately if one is needed.
+ *
+ * Idempotent by construction: staff/{uid}'s document ID IS the Auth uid,
+ * so this can never create a second staff doc for the same account —
+ * "exactly one Auth UID = one staff/{uid}" holds structurally, not as an
+ * extra check. Calling this again for a uid that already has a doc is a
+ * safe merge/update of that SAME doc (e.g. to adjust fields after the
+ * initial link).
+ *
+ * Input : { uid: string, displayName: string, role: StaffRole,
+ *           phoneNumber?, post?, department?, salaryPerHour?,
+ *           salaryPerDay?, workingHours?, joiningDate?, employeeId?,
+ *           notes?, active? }
+ * Output: { ok: true, uid: string }
+ * ═══════════════════════════════════════════════════════════════════*/
+export const staffLinkExistingAccount = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const actor = await requireSuperAdmin(request.auth.uid);
+
+  const data = request.data as {
+    uid?: string;
+    displayName?: string;
+    role?: string;
+    phoneNumber?: string;
+    post?: string | null;
+    department?: string | null;
+    salaryPerHour?: number | null;
+    salaryPerDay?: number | null;
+    workingHours?: { start: string; end: string } | null;
+    joiningDate?: string | null;
+    employeeId?: string | null;
+    notes?: string | null;
+    active?: boolean;
+  };
+  const { uid, displayName, role } = data;
+
+  if (!uid || typeof uid !== "string") {
+    throw new HttpsError("invalid-argument", "uid is required.");
+  }
+  if (!displayName || typeof displayName !== "string" || !displayName.trim()) {
+    throw new HttpsError("invalid-argument", "displayName is required.");
+  }
+  const canonicalRole = normalizeStaffRole(role);
+  if (!canonicalRole || !VALID_STAFF_ROLES.has(canonicalRole)) {
+    throw new HttpsError("invalid-argument", `Invalid role: ${role}`);
+  }
+
+  // Hard guarantee: never write a staff/{uid} doc for a uid that isn't a
+  // real, already-existing Auth account — this is what makes "link" safe
+  // to expose without an admin.auth().createUser() call anywhere in it.
+  let authUser;
+  try {
+    authUser = await admin.auth().getUser(uid);
+  } catch {
+    throw new HttpsError("not-found", `No Firebase Auth account exists for uid ${uid}.`);
+  }
+
+  const patch: Record<string, unknown> = { displayName };
+  const profileKeys = [
+    "post", "department", "salaryPerHour", "salaryPerDay", "workingHours",
+    "joiningDate", "employeeId", "notes",
+  ] as const;
+  for (const k of profileKeys) {
+    if (data[k] !== undefined) patch[k] = data[k];
+  }
+  if (data.active !== undefined) {
+    if (typeof data.active !== "boolean") {
+      throw new HttpsError("invalid-argument", "active must be a boolean.");
+    }
+    patch.active = data.active;
+  }
+  validateProfilePatch(patch); // trims/validates displayName + profile fields IN PLACE
+
+  // phoneNumber (optional): reuse the EXACT same uniqueness + Auth-update
+  // path as staffUpdate — never silently create a duplicate identity, and
+  // never attach a number another uid already holds.
+  if (data.phoneNumber !== undefined) {
+    const raw = String(data.phoneNumber ?? "").trim();
+    if (raw && !E164_RE.test(raw)) {
+      throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+    }
+    if (raw) await assertPhoneNotTaken(raw, uid);
+    try {
+      await admin.auth().updateUser(uid, { phoneNumber: raw || null });
+    } catch (err: any) {
+      throw new HttpsError("invalid-argument", err?.message || "Could not set the phone number on the Auth account.");
+    }
+    patch.phoneNumber = raw || null;
+  }
+
+  const now = new Date().toISOString();
+  const beforeSnap = await db.doc(`staff/${uid}`).get();
+  const before = beforeSnap.exists ? beforeSnap.data()! : null;
+
+  const staffDoc: Record<string, unknown> = {
+    ...patch,
+    uid,
+    email: authUser.email || before?.email || "",
+    role: canonicalRole,
+    active: patch.active !== undefined ? patch.active : (before?.active ?? true),
+    createdAt: before?.createdAt || now,
+    updatedAt: now,
+    createdBy: before?.createdBy || request.auth.uid,
+  };
+
+  const mirror: Record<string, unknown> = staffCustomerMirror(
+    uid, staffDoc.displayName as string, staffDoc.email as string, canonicalRole, now,
+  );
+  if (!before) {
+    mirror.createdAt = now;
+    mirror.createdBy = request.auth.uid;
+  }
+
+  const batch = db.batch();
+  batch.set(db.doc(`staff/${uid}`), staffDoc, { merge: true });
+  batch.set(db.doc(`customers/${uid}`), mirror, { merge: true });
+  await batch.commit();
+
+  await writeAudit(
+    "STAFF_LINK_EXISTING_ACCOUNT", "staff", uid, request.auth.uid, actor.name, actor.role,
+    before, staffDoc,
+    "Linked an existing Firebase Auth account to a staff profile",
+  );
+
+  return { ok: true, uid };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * staffTransferPhoneNumber — Super-Admin-only. Moves a phone number from
+ * one Firebase Auth account (source) to another (target) WITHOUT ever
+ * deleting, merging, or creating any Auth user or staff/{uid} doc, and
+ * WITHOUT ever touching either account's email. Exists for exactly the
+ * case assertPhoneNotTaken (staffUpdate/staffCreate/staffLinkExisting-
+ * Account) correctly refuses: a number currently held by a different,
+ * unrelated-looking Auth account that the Super Admin has deliberately
+ * decided should move to a specific other account instead — e.g.
+ * reconciling two Auth identities that belong to the same real person.
+ *
+ * State-classified and resumable: a prior attempt that failed partway
+ * (e.g. the number ended up attached to NEITHER account, because the
+ * assign-to-target step failed and the automatic rollback also failed)
+ * is safely resumed by calling this again with the SAME arguments — it
+ * re-reads live Auth state and continues from wherever it actually is,
+ * rather than assuming a fresh start. This is what keeps routine
+ * reconciliation inside LUXARDO FLOW — the Firebase Console is never a
+ * required step, only a theoretical last resort if the Auth API itself
+ * keeps failing across retries.
+ *
+ * "Neither account currently holds the number" (ORPHANED) is deliberately
+ * NEVER inferred as resumable from Auth state alone — that can't be told
+ * apart from "source never held this number to begin with." A small
+ * phoneTransferAttempts/{hash(sourceUid|targetUid|phoneNumber)} marker,
+ * written BEFORE the first Auth mutation and cleared only on final
+ * success, is the one thing that legitimises a resume; its absence makes
+ * an otherwise-ORPHANED-looking state fail closed as MISMATCH instead.
+ *
+ * dryRun (default TRUE — same safety convention as staffBackfillCustomer-
+ * Docs): performs ONLY the read-only verification/state-classification
+ * below and returns a preview — zero writes. The confirmation UI is
+ * built from this server-verified preview, never a client-side guess.
+ * The caller must explicitly pass dryRun:false to actually execute.
+ *
+ * Verification (always, even when dryRun:false — re-checked fresh right
+ * before writing, never trusted from an earlier dry run):
+ *   - both sourceUid and targetUid resolve to real Auth accounts;
+ *   - source actually holds the requested phone number (or the Auth-level
+ *     move already happened in a prior partial run — see state below);
+ *   - target does not already hold a DIFFERENT phone number (never
+ *     silently overwritten).
+ *   Anything else classifies as MISMATCH and the function refuses to
+ *   guess, rather than resolving it automatically.
+ *
+ * Input : { sourceUid, targetUid, phoneNumber, dryRun?: boolean }
+ * Output: { ok: true, preview: {...} }
+ * Throws: HttpsError whose `details` carries { stepReached, sourceUid,
+ *         targetUid, rolledBack? } on ANY failure — never a bare
+ *         "failed" message, so the caller always knows the exact
+ *         partial state and whether anything needs manual follow-up.
+ * ═══════════════════════════════════════════════════════════════════*/
+
+type PhoneTransferState = "NOT_STARTED" | "AUTH_TRANSFERRED" | "ORPHANED" | "MISMATCH";
+
+/**
+ * Pure, dependency-free classification of the current Auth-level phone
+ * state relative to the requested transfer — kept separate so it can be
+ * reasoned about (and unit-tested) independently of any Admin SDK call.
+ */
+function classifyPhoneTransferState(
+  sourcePhone: string | null | undefined,
+  targetPhone: string | null | undefined,
+  phoneNumber: string,
+): PhoneTransferState {
+  if (sourcePhone === phoneNumber && !targetPhone) return "NOT_STARTED";
+  if (!sourcePhone && targetPhone === phoneNumber) return "AUTH_TRANSFERRED";
+  if (!sourcePhone && !targetPhone) return "ORPHANED";
+  return "MISMATCH";
+}
+
+/** Masked last-4 + a SHA-256 hash, for audit entries that never carry the full number in plaintext. */
+function maskPhoneForAudit(phone: string): { maskedLast4: string; hash: string } {
+  return { maskedLast4: phone.slice(-4), hash: crypto.createHash("sha256").update(phone).digest("hex") };
+}
+
+export const staffTransferPhoneNumber = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const actor = await requireSuperAdmin(request.auth.uid);
+
+  const { sourceUid, targetUid, phoneNumber, dryRun = true } = request.data as {
+    sourceUid?: string; targetUid?: string; phoneNumber?: string; dryRun?: boolean;
+  };
+
+  if (!sourceUid || typeof sourceUid !== "string" || !targetUid || typeof targetUid !== "string") {
+    throw new HttpsError("invalid-argument", "sourceUid and targetUid are required.");
+  }
+  if (sourceUid === targetUid) {
+    throw new HttpsError("invalid-argument", "sourceUid and targetUid must be different accounts.");
+  }
+  const phone = String(phoneNumber ?? "").trim();
+  if (!phone || !E164_RE.test(phone)) {
+    throw new HttpsError("invalid-argument", "phoneNumber must be E.164 format, e.g. +919876543210.");
+  }
+
+  const fail = (step: string, message: string, extra?: Record<string, unknown>): HttpsError =>
+    new HttpsError("failed-precondition", message, { stepReached: step, sourceUid, targetUid, ...extra });
+  const mask = (p: string | null | undefined) => (p ? `••••${p.slice(-4)}` : "no number");
+
+  let sourceUser;
+  try {
+    sourceUser = await admin.auth().getUser(sourceUid);
+  } catch {
+    throw fail("VERIFY_SOURCE", `Source Auth account ${sourceUid} was not found.`);
+  }
+  let targetUser;
+  try {
+    targetUser = await admin.auth().getUser(targetUid);
+  } catch {
+    throw fail("VERIFY_TARGET", `Target Auth account ${targetUid} was not found.`);
+  }
+
+  // Deterministic marker for THIS exact (source, target, phone) triple —
+  // the only safe way to tell "a prior attempt of OUR OWN got interrupted
+  // here" apart from "this number was never on source to begin with."
+  // Written BEFORE any Auth mutation (below) and cleared only on final
+  // success, so it survives exactly the window a resume needs to cover.
+  const transferKey = crypto.createHash("sha256").update(`${sourceUid}|${targetUid}|${phone}`).digest("hex");
+  const attemptRef = db.doc(`phoneTransferAttempts/${transferKey}`);
+
+  let state = classifyPhoneTransferState(sourceUser.phoneNumber, targetUser.phoneNumber, phone);
+  if (state === "ORPHANED") {
+    // "Neither account currently holds it" is ONLY a legitimate resume when
+    // OUR OWN marker says a transfer of this exact triple was already under
+    // way — Auth state alone cannot distinguish that from an arbitrary
+    // request where source never held this number at all. No marker ->
+    // treat it exactly like any other MISMATCH, never guess.
+    const attemptSnap = await attemptRef.get();
+    if (!attemptSnap.exists) {
+      state = "MISMATCH";
+    }
+  }
+  if (state === "MISMATCH") {
+    throw fail(
+      "CLASSIFY",
+      `Current phone state does not match this transfer request. Source currently holds ${mask(sourceUser.phoneNumber)}, target currently holds ${mask(targetUser.phoneNumber)}; expected source to hold ${mask(phone)} and target to hold none. Refusing to guess — resolve manually before retrying.`,
+    );
+  }
+
+  const sourceStaffSnap = await db.doc(`staff/${sourceUid}`).get();
+  const targetStaffSnap = await db.doc(`staff/${targetUid}`).get();
+  const { maskedLast4, hash } = maskPhoneForAudit(phone);
+
+  const preview = {
+    state,
+    sourceUid, sourceEmail: sourceUser.email ?? null, sourceHasStaffDoc: sourceStaffSnap.exists,
+    targetUid, targetEmail: targetUser.email ?? null,
+    targetDisplayName: targetStaffSnap.exists ? (targetStaffSnap.data()?.displayName ?? null) : null,
+    targetRole: targetStaffSnap.exists ? (targetStaffSnap.data()?.role ?? null) : null,
+    phoneNumberMaskedLast4: maskedLast4,
+  };
+
+  if (dryRun) {
+    return { ok: true, preview };
+  }
+
+  const now = new Date().toISOString();
+
+  if (state === "NOT_STARTED") {
+    // Record the attempt BEFORE the first Auth mutation — if everything
+    // after this point fails irrecoverably, this marker is what lets a
+    // later call safely recognise "neither account holds it" as OUR OWN
+    // interrupted attempt rather than refusing it as an unverified MISMATCH.
+    await attemptRef.set({ sourceUid, targetUid, maskedLast4, hash, startedAt: now }, { merge: true });
+    try {
+      await admin.auth().updateUser(sourceUid, { phoneNumber: null });
+    } catch (err: any) {
+      throw fail("REMOVE_FROM_SOURCE", err?.message || "Could not remove the phone number from the source account. Nothing changed.");
+    }
+  }
+
+  // Reachable from NOT_STARTED (just cleared above) or ORPHANED (a prior
+  // run already cleared it but never completed the assignment) — either
+  // way, the number currently belongs to neither account and must be
+  // assigned to the target now.
+  if (state === "NOT_STARTED" || state === "ORPHANED") {
+    try {
+      await admin.auth().updateUser(targetUid, { phoneNumber: phone });
+    } catch (assignErr: any) {
+      let rolledBack = false;
+      try {
+        await admin.auth().updateUser(sourceUid, { phoneNumber: phone });
+        rolledBack = true;
+      } catch {
+        rolledBack = false;
+      }
+
+      await writeAudit(
+        rolledBack ? "STAFF_PHONE_TRANSFER_ROLLED_BACK" : "STAFF_PHONE_TRANSFER_ORPHANED",
+        "staff", targetUid, request.auth.uid, actor.name, actor.role,
+        null,
+        { sourceUid, targetUid, maskedLast4, hash },
+        rolledBack
+          ? "Assign-to-target step failed; automatically rolled back to source — nothing lost."
+          : "CRITICAL: phone removed from source but not assigned to target, and automatic rollback also failed. Number is currently attached to neither account.",
+      );
+
+      throw fail(
+        "ASSIGN_TO_TARGET",
+        rolledBack
+          ? `Could not assign the number to the target account (${assignErr?.message || "unknown error"}). Automatically rolled back — the source account still holds the number; nothing was lost.`
+          : "CRITICAL: the number was removed from the source account but could NOT be assigned to the target, and automatic rollback ALSO failed. The number is attached to neither account. Re-run this same transfer to retry — it is safe to resume.",
+        { rolledBack },
+      );
+    }
+  }
+
+  try {
+    await db.doc(`staff/${targetUid}`).set({ phoneNumber: phone, updatedAt: now }, { merge: true });
+  } catch (err: any) {
+    await writeAudit(
+      "STAFF_PHONE_TRANSFER_MIRROR_FAILED", "staff", targetUid, request.auth.uid, actor.name, actor.role,
+      null, { sourceUid, targetUid, maskedLast4, hash, step: "UPDATE_TARGET_MIRROR" },
+      "Auth-level transfer succeeded; target staff/{uid} mirror update failed.",
+    );
+    throw fail(
+      "UPDATE_TARGET_MIRROR",
+      `The Auth-level transfer succeeded — the target account now owns the number — but updating its staff profile failed: ${err?.message || "unknown error"}. Safe to retry; nothing else needs undoing.`,
+    );
+  }
+
+  if (sourceStaffSnap.exists) {
+    try {
+      await db.doc(`staff/${sourceUid}`).set({ phoneNumber: null, updatedAt: now }, { merge: true });
+    } catch (err: any) {
+      await writeAudit(
+        "STAFF_PHONE_TRANSFER_MIRROR_FAILED", "staff", targetUid, request.auth.uid, actor.name, actor.role,
+        null, { sourceUid, targetUid, maskedLast4, hash, step: "CLEAR_SOURCE_MIRROR" },
+        "Auth-level transfer and target mirror succeeded; clearing the source profile's stale mobile number failed.",
+      );
+      throw fail(
+        "CLEAR_SOURCE_MIRROR",
+        `The transfer succeeded and the target profile is correct, but clearing the old number from the source profile failed: ${err?.message || "unknown error"}. Safe to retry.`,
+      );
+    }
+  }
+
+  // Transfer is now fully complete and correct on both sides — the marker
+  // has done its job and a leftover doc would only ever grant resume rights
+  // for an already-finished triple, so clear it. Best-effort: a failure
+  // here never un-does the transfer itself.
+  await attemptRef.delete().catch(() => {});
+
+  await writeAudit(
+    "STAFF_PHONE_TRANSFER", "staff", targetUid, request.auth.uid, actor.name, actor.role,
+    { sourceUid, maskedLast4, hash }, { targetUid, maskedLast4, hash },
+    `Phone number transferred: ${sourceUid} -> ${targetUid}`,
+  );
+
+  return { ok: true, preview };
+});
+
+/* ═══════════════════════════════════════════════════════════════════
  * staffDelete — permanently removes a staff account: the Firebase Auth
  * user AND staff/{uid}. Super-Admin-only.
  *

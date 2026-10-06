@@ -28,6 +28,9 @@ export {
   staffBackfillCustomerDocs,
   staffResetPassword,
   staffLookupByPhone,
+  staffLookupIdentity,
+  staffLinkExistingAccount,
+  staffTransferPhoneNumber,
   karigarCreate,
   karigarUpdate,
 } from "../../functions/src/production";

@@ -86,6 +86,27 @@ export default function StaffManagementPage() {
   const [newPhoneNumber, setNewPhoneNumber] = useState('');
   const newPhoneValid = newPhoneNumber.trim() === '' || isValidE164(newPhoneNumber);
 
+  // Link Existing Auth Account — optional, assistive pre-check on the SAME
+  // "Add Staff" form. If the admin never clicks "Check", behavior is exactly
+  // as before (staffCreate). If the check finds an existing Auth account with
+  // no staff profile, the form switches to staffLinkExistingAccount instead
+  // (no password field — no credential is created or changed).
+  const [identityChecked, setIdentityChecked] = useState(false);
+  const [checkingIdentity, setCheckingIdentity] = useState(false);
+  const [identityResult, setIdentityResult] = useState<any>(null);
+  const linkMode = identityChecked && !!identityResult?.found && !identityResult.conflict && !identityResult.existingStaffDoc;
+  const conflictMode = identityChecked && !!identityResult?.found && !!identityResult.conflict;
+  const alreadyLinkedMode = identityChecked && !!identityResult?.found && !identityResult.conflict && !!identityResult.existingStaffDoc;
+
+  // Transfer Mobile Number (Super Admin only) — reached from the Edit Mobile
+  // Number modal below when the number already belongs to a DIFFERENT uid.
+  const [transferTarget, setTransferTarget] = useState<StaffDoc | null>(null);
+  const [transferPhone, setTransferPhone] = useState('');
+  const [transferPreview, setTransferPreview] = useState<any>(null);
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  useScrollLock(!!transferTarget);
+
   // Set/Edit Mobile Number modal state (Super Admin only)
   const [mobileTarget, setMobileTarget] = useState<StaffDoc | null>(null);
   const [mobileValue, setMobileValue] = useState('');
@@ -119,12 +140,78 @@ export default function StaffManagementPage() {
     return <Navigate to="/production" replace />;
   }
 
+  const closeCreateModal = () => {
+    if (creating) return;
+    setShowCreateModal(false);
+    setIdentityChecked(false);
+    setIdentityResult(null);
+  };
+
+  const resetCreateForm = () => {
+    setShowCreateModal(false);
+    setNewName(''); setNewEmail(''); setNewRole('designer'); setNewPassword(''); setNewPhoneNumber('');
+    setIdentityChecked(false); setIdentityResult(null);
+  };
+
+  // Optional, assistive pre-check — resolves email/mobile to an existing
+  // Auth account (if any) BEFORE the admin decides whether to create a new
+  // account or link an existing one. Never attempts to create anything.
+  const checkIdentity = async () => {
+    if (!newEmail.trim() && !newPhoneNumber.trim()) return;
+    setCheckingIdentity(true);
+    setToast(null);
+    try {
+      const lookupFn = httpsCallable(functions, 'staffLookupIdentity');
+      const res: any = await lookupFn({
+        email: newEmail.trim() || undefined,
+        phoneNumber: newPhoneNumber.trim() || undefined,
+      });
+      setIdentityResult(res.data);
+      setIdentityChecked(true);
+    } catch (err: any) {
+      setToast({ type: 'error', message: err.message || 'Could not check this email/mobile.' });
+    } finally {
+      setCheckingIdentity(false);
+    }
+  };
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim() || !newEmail.trim() || !newPassword.trim()) return;
+    if (!newName.trim() || !newEmail.trim()) return;
     if (!newPhoneValid) return; // guarded by disabled submit too; belt-and-braces
+    if (conflictMode || alreadyLinkedMode) return; // guarded by disabled submit too
+
     setCreating(true);
     setToast(null);
+
+    // Link Existing Account — an Auth account was found with no staff
+    // profile yet. No password field, no admin.auth().createUser() call —
+    // staffLinkExistingAccount only ever attaches a profile to the EXACT
+    // uid staffLookupIdentity just resolved.
+    if (linkMode) {
+      try {
+        const linkFn = httpsCallable(functions, 'staffLinkExistingAccount');
+        await linkFn({
+          uid: identityResult.uid,
+          displayName: newName.trim(),
+          role: newRole,
+          phoneNumber: newPhoneNumber.trim() || undefined,
+        });
+        setToast({
+          type: 'success',
+          message: `Linked existing account for "${newName.trim()}" (${roleLabel(newRole)}). No new password was created — they already have one.`,
+        });
+        resetCreateForm();
+        await loadStaff();
+      } catch (err: any) {
+        setToast({ type: 'error', message: err.message || 'Failed to link existing account.' });
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
+
+    if (!newPassword.trim()) { setCreating(false); return; }
 
     try {
       const staffCreateFn = httpsCallable(functions, 'staffCreate');
@@ -140,8 +227,7 @@ export default function StaffManagementPage() {
         type: 'success',
         message: `Staff "${newName.trim()}" created (${roleLabel(newRole)}). They can now sign in at /production with the password you set.`,
       });
-      setShowCreateModal(false);
-      setNewName(''); setNewEmail(''); setNewRole('designer'); setNewPassword(''); setNewPhoneNumber('');
+      resetCreateForm();
       await loadStaff();
     } catch (err: any) {
       setToast({ type: 'error', message: err.message || 'Failed to create staff.' });
@@ -194,9 +280,12 @@ export default function StaffManagementPage() {
         const lookupFn = httpsCallable(functions, 'staffLookupByPhone');
         const lookupRes: any = await lookupFn({ phoneNumber: value });
         if (lookupRes.data?.exists && lookupRes.data.uid !== s.uid) {
-          const holderName = lookupRes.data.staff?.displayName || lookupRes.data.email || lookupRes.data.uid;
-          setToast({ type: 'error', message: `This number is already in use by ${holderName}.` });
+          // Held by a DIFFERENT Auth account — offer the explicit Transfer
+          // Mobile Number flow instead of a dead-end error. Never attempted
+          // automatically; the admin must review the preview and confirm.
           setSavingMobile(false);
+          setMobileTarget(null); setMobileValue('');
+          await openTransferModal(s, lookupRes.data.uid, value);
           return;
         }
       }
@@ -214,6 +303,62 @@ export default function StaffManagementPage() {
       setToast({ type: 'error', message: err.message || 'Failed to update mobile number.' });
     } finally {
       setSavingMobile(false);
+    }
+  };
+
+  // ── Transfer Mobile Number (Super Admin only) ──
+  // Reached only from saveMobileNumber's conflict branch above. Always
+  // opens with a fresh, server-verified dryRun preview (staffTransferPhone-
+  // Number's own re-check, not a client guess) — the admin confirms THAT
+  // preview before anything is written.
+  const openTransferModal = async (target: StaffDoc, sourceUid: string, phone: string) => {
+    setTransferTarget(target);
+    setTransferPhone(phone);
+    setTransferPreview(null);
+    setTransferLoading(true);
+    try {
+      const transferFn = httpsCallable(functions, 'staffTransferPhoneNumber');
+      const res: any = await transferFn({ sourceUid, targetUid: target.uid, phoneNumber: phone, dryRun: true });
+      setTransferPreview(res.data?.preview || null);
+    } catch (err: any) {
+      setToast({ type: 'error', message: err.message || 'Could not preview this transfer.' });
+      setTransferTarget(null);
+    } finally {
+      setTransferLoading(false);
+    }
+  };
+  const closeTransferModal = () => {
+    if (transferring) return;
+    setTransferTarget(null);
+    setTransferPhone('');
+    setTransferPreview(null);
+  };
+  const confirmTransfer = async () => {
+    if (!transferTarget || !transferPreview) return;
+    setTransferring(true);
+    try {
+      const transferFn = httpsCallable(functions, 'staffTransferPhoneNumber');
+      await transferFn({
+        sourceUid: transferPreview.sourceUid,
+        targetUid: transferTarget.uid,
+        phoneNumber: transferPhone,
+        dryRun: false,
+      });
+      setToast({
+        type: 'success',
+        message: `Transferred ••••${transferPreview.phoneNumberMaskedLast4} from the source account to ${transferTarget.displayName}.`,
+      });
+      setTransferTarget(null); setTransferPhone(''); setTransferPreview(null);
+      await loadStaff();
+    } catch (err: any) {
+      // staffTransferPhoneNumber's HttpsError.details.stepReached names
+      // exactly how far the transfer got — surfaced verbatim rather than a
+      // generic failure message, per "report the exact partial state."
+      const details = (err && (err.details as Record<string, unknown> | undefined)) || undefined;
+      const step = details && typeof details.stepReached === 'string' ? ` (step: ${details.stepReached})` : '';
+      setToast({ type: 'error', message: `${err.message || 'Transfer failed.'}${step}` });
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -620,7 +765,7 @@ export default function StaffManagementPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
-            onClick={() => !creating && setShowCreateModal(false)}
+            onClick={closeCreateModal}
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
@@ -631,33 +776,26 @@ export default function StaffManagementPage() {
             >
               <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
                 <h2 className="text-lg font-display text-black">Add Staff Member</h2>
-                <button onClick={() => setShowCreateModal(false)} className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
+                <button onClick={closeCreateModal} className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
                   <X size={18} />
                 </button>
               </div>
-              <form onSubmit={handleCreate} className="p-6 space-y-5">
+              <form onSubmit={handleCreate} className="p-6 space-y-5" autoComplete="off">
                 <div>
                   <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Full Name</label>
-                  <input type="text" required value={newName} onChange={e => setNewName(e.target.value)}
+                  <input type="text" required autoComplete="off" value={newName} onChange={e => setNewName(e.target.value)}
                     className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Email</label>
-                  <input type="email" required value={newEmail} onChange={e => setNewEmail(e.target.value)}
+                  <input type="email" required autoComplete="off" value={newEmail}
+                    onChange={e => { setNewEmail(e.target.value); setIdentityChecked(false); setIdentityResult(null); }}
                     className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Role</label>
-                  <select value={newRole} onChange={e => setNewRole(e.target.value as StaffRole)}
-                    className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all">
-                    {PRODUCTION_CONFIG.productionRoles.map(r => (
-                      <option key={r} value={r}>{roleLabel(r)}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
                   <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Mobile Number (optional)</label>
-                  <input type="tel" value={newPhoneNumber} onChange={e => setNewPhoneNumber(e.target.value)}
+                  <input type="tel" autoComplete="off" value={newPhoneNumber}
+                    onChange={e => { setNewPhoneNumber(e.target.value); setIdentityChecked(false); setIdentityResult(null); }}
                     placeholder="+919876543210"
                     aria-invalid={!newPhoneValid}
                     className={`w-full px-4 py-3 text-sm border rounded-xl font-mono focus:outline-none focus:ring-2 transition-all ${
@@ -669,24 +807,157 @@ export default function StaffManagementPage() {
                     <p className="text-[10px] text-red-500 mt-1">Enter a valid E.164 number, e.g. +919876543210.</p>
                   )}
                 </div>
+
+                {/* Link Existing Auth Account — optional pre-check */}
                 <div>
+                  <button
+                    type="button"
+                    onClick={checkIdentity}
+                    disabled={checkingIdentity || (!newEmail.trim() && !newPhoneNumber.trim())}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    {checkingIdentity ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+                    {checkingIdentity ? 'Checking…' : 'Check Email / Mobile for an Existing Account'}
+                  </button>
+
+                  {identityChecked && !identityResult?.found && (
+                    <p className="text-[10px] text-gray-400 mt-2">No existing sign-in account found — a new one will be created.</p>
+                  )}
+
+                  {linkMode && (
+                    <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-xl text-[11px] text-blue-900 leading-relaxed">
+                      <strong>Existing sign-in account found.</strong> No new login will be created — this will attach a staff
+                      profile to the account already registered as{' '}
+                      {identityResult.email && <span className="font-mono">{identityResult.email}</span>}
+                      {identityResult.email && identityResult.phoneNumber && ' / '}
+                      {identityResult.phoneNumber && <span className="font-mono">{identityResult.phoneNumber}</span>}
+                      {identityResult.displayName ? ` (${identityResult.displayName})` : ''}.
+                    </div>
+                  )}
+
+                  {alreadyLinkedMode && (
+                    <div className="mt-3 p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-900 leading-relaxed">
+                      <strong>Already linked.</strong> This account is already a staff profile:{' '}
+                      {identityResult.existingStaffDoc?.displayName} ({roleLabel(identityResult.existingStaffDoc?.role)}).
+                      Edit that row below instead of creating a duplicate.
+                    </div>
+                  )}
+
+                  {conflictMode && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-xl text-[11px] text-red-900 leading-relaxed">
+                      <strong>Conflict.</strong> This email and mobile number belong to TWO DIFFERENT sign-in accounts
+                      (uid …{String(identityResult.emailUid).slice(-6)} vs …{String(identityResult.phoneUid).slice(-6)}).
+                      Clear one of the two fields above and check again to link just that one identifier.
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Role</label>
+                  <select value={newRole} onChange={e => setNewRole(e.target.value as StaffRole)}
+                    className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all">
+                    {PRODUCTION_CONFIG.productionRoles.map(r => (
+                      <option key={r} value={r}>{roleLabel(r)}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Kept structurally mounted at all times (CSS-hidden via
+                    className rather than conditionally unmounted) so the
+                    form's set of controls never changes shape when switching
+                    into link mode. Requiredness is enforced purely in JS
+                    (handleCreate's `if (!newPassword.trim())` guard below,
+                    reached only on the non-link path), so no native HTML5
+                    `required` attribute needs to toggle either. */}
+                <div className={linkMode ? 'hidden' : ''}>
                   <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Temporary Password</label>
-                  <input type="text" required value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                  <input type="text" autoComplete="off" value={newPassword} onChange={e => setNewPassword(e.target.value)}
                     className="w-full px-4 py-3 text-sm border border-gray-200 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-black/5 focus:border-black/20 transition-all" />
                   <p className="text-[10px] text-gray-400 mt-1">Staff must change on first login.</p>
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
-                  <button type="button" onClick={() => setShowCreateModal(false)}
+                  <button type="button" onClick={closeCreateModal}
                     className="px-5 py-2.5 text-sm text-gray-500 hover:text-black transition-colors">
                     Cancel
                   </button>
-                  <button type="submit" disabled={creating || !newPhoneValid}
+                  <button type="submit" disabled={creating || !newPhoneValid || conflictMode || alreadyLinkedMode}
                     className="flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
                     {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                    {creating ? 'Creating…' : 'Create Staff'}
+                    {creating ? (linkMode ? 'Linking…' : 'Creating…') : (linkMode ? 'Link Existing Account' : 'Create Staff')}
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Transfer Mobile Number Modal (Super Admin only) */}
+      <AnimatePresence>
+        {transferTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={closeTransferModal}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+                <h2 className="text-lg font-display text-black">Transfer Mobile Number</h2>
+                <button onClick={closeTransferModal} className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-lg transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                {transferLoading && (
+                  <div className="flex items-center justify-center py-6 text-gray-400">
+                    <Loader2 size={20} className="animate-spin" />
+                  </div>
+                )}
+                {!transferLoading && transferPreview && (
+                  <>
+                    <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-900 leading-relaxed flex items-start gap-2">
+                      <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                      <span>
+                        Number <span className="font-mono">••••{transferPreview.phoneNumberMaskedLast4}</span> is currently
+                        held by a different sign-in account. Review carefully — both accounts and their email identities
+                        are preserved; only the phone number moves.
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 text-xs">
+                      <div className="p-3 border border-gray-200 rounded-xl">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1">From (source)</p>
+                        <p className="font-mono text-gray-800">{transferPreview.sourceEmail || transferPreview.sourceUid}</p>
+                        <p className="text-gray-400 mt-1">
+                          {transferPreview.sourceHasStaffDoc ? 'Has a staff profile' : 'No staff profile — not shown in this list'}
+                        </p>
+                      </div>
+                      <div className="p-3 border border-gray-200 rounded-xl">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1">To (target)</p>
+                        <p className="font-mono text-gray-800">{transferTarget.displayName} — {transferTarget.email}</p>
+                        <p className="text-gray-400 mt-1">{roleLabel(transferTarget.role)}</p>
+                      </div>
+                    </div>
+                  </>
+                )}
+                <div className="flex justify-end gap-3 pt-2">
+                  <button type="button" onClick={closeTransferModal} disabled={transferring}
+                    className="px-5 py-2.5 text-sm text-gray-500 hover:text-black transition-colors disabled:opacity-50">
+                    Cancel
+                  </button>
+                  <button type="button" onClick={confirmTransfer} disabled={transferring || transferLoading || !transferPreview}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                    {transferring ? <Loader2 size={14} className="animate-spin" /> : <Phone size={14} />}
+                    {transferring ? 'Transferring…' : 'Confirm Transfer'}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
