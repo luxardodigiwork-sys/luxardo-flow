@@ -78,13 +78,21 @@ export const PRODUCTION_CONFIG = {
   ] as const,
   defaultHourlyRateRange: { min: 50, max: 500 },
   qcChecklistDefaults: ["fabric_integrity", "pattern_accuracy", "finish_quality"],
-  // Operational production personnel only, selectable from the generic
-  // "Add Staff Member" form. Owner is a privileged account, not ordinary
-  // staff, and must not be mintable from this form; "admin" was a dead
-  // option here too — the real Admin identity is resolved by hardcoded
-  // email (src/utils/loomIdentity.ts), never by a staff/{uid} role string,
-  // so picking it here could never have granted real Admin access.
-  productionRoles: ["designer", "pm", "dispatch", "guard", "tailor", "store"] as const,
+  // The complete set of roles assignable via Staff Management (Add Staff /
+  // Link Existing Account / Change Role) — kept in exact sync with the
+  // server's own CANONICAL_STAFF_ROLES (functions/src/staffAuth.ts) and the
+  // client StaffRole union (src/types/production.ts), which is what
+  // staffCreate/staffUpdate/staffLinkExistingAccount actually validate
+  // against. Deliberately excludes "super_admin": that identity is tied to
+  // one hardcoded Gmail account (src/utils/loomIdentity.ts) and is never
+  // assignable via any staff-mutating callable — Admin and Owner ARE
+  // ordinary assignable roles here (Admin's real identity still resolves by
+  // hardcoded email too, but login additionally requires this staff/{uid}
+  // role to actually say "admin" — see isEligiblePrivilegedStaffDoc).
+  productionRoles: [
+    "owner", "admin", "designer", "pm", "dispatch", "guard", "tailor",
+    "store", "accounts", "analysis",
+  ] as const,
   // Purely descriptive User Profile field — kept in sync with
   // functions/src/staffAuth.ts CANONICAL_DEPARTMENTS. Never consulted by
   // any authorization check; changing a User's department never grants a
