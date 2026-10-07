@@ -169,7 +169,15 @@ export default function OwnerReportsPage() {
   ];
 
   return (
-    <div className="min-h-screen p-6 md:p-8">
+    // print:min-h-0 — the bug fix. min-h-screen forces min-height:100vh,
+    // which in print is computed against the physical page box BEFORE
+    // Chrome's own header/footer margins are subtracted, so it is
+    // fractionally taller than one printable page — pushing a completely
+    // empty sliver onto a second, blank page for every short report. The
+    // print variant removes the forced height so the box sizes to its
+    // actual content; a genuinely long report still paginates normally
+    // since nothing here caps how TALL the content may grow.
+    <div className="min-h-screen print:min-h-0 p-6 md:p-8">
       <div className="mb-8 print:hidden">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center">
@@ -201,7 +209,9 @@ export default function OwnerReportsPage() {
           </div>
 
           {tab === 'production' && summary && (
-            <div className="space-y-6 print:hidden">
+            <div className="space-y-6">
+              <ReportPrintHeader title="Production Report" subtitle={<p className="text-sm">{fmtDate(new Date().toISOString())}</p>} />
+              <div className="flex justify-end print:hidden"><ExportPdfButton /></div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <KpiMini label="Completed Today" value={summary.performance.piecesCompletedToday} />
                 <KpiMini label="Completed Yesterday" value={summary.performance.piecesCompletedYesterday} />
@@ -215,15 +225,17 @@ export default function OwnerReportsPage() {
           )}
 
           {tab === 'labour' && summary && (
-            <div className="space-y-6 print:hidden">
+            <div className="space-y-6">
+              <ReportPrintHeader title="Labour Cost Report" subtitle={<p className="text-sm">{fmtDate(new Date().toISOString())}</p>} />
+              <div className="flex justify-end print:hidden"><ExportPdfButton /></div>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <PeriodKpi title="Today" card={summary.periods.today} />
                 <PeriodKpi title="Yesterday" card={summary.periods.yesterday} />
                 <PeriodKpi title="Last 7 Days" card={summary.periods.last7Days} />
                 <PeriodKpi title="Current Month" card={summary.periods.currentMonth} />
               </div>
-              <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-                <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+              <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden print:border-0 print:shadow-none print:rounded-none">
+                <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2 print:hidden">
                   <Users size={16} className="text-gray-400" />
                   <h2 className="text-sm font-bold text-black uppercase tracking-widest">Karigar Summary (all-time)</h2>
                 </div>
@@ -255,8 +267,11 @@ export default function OwnerReportsPage() {
           )}
 
           {tab === 'reworkReject' && (
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden print:hidden">
-              <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+            <div>
+              <ReportPrintHeader title="Rework / Reject Report" subtitle={<p className="text-sm">{fmtDate(new Date().toISOString())}</p>} />
+              <div className="flex justify-end mb-4 print:hidden"><ExportPdfButton /></div>
+              <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden print:border-0 print:shadow-none print:rounded-none">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2 print:hidden">
                 <AlertTriangle size={16} className="text-gray-400" />
                 <h2 className="text-sm font-bold text-black uppercase tracking-widest">Rework / Reject Report</h2>
               </div>
@@ -287,6 +302,7 @@ export default function OwnerReportsPage() {
                   </table>
                 </div>
               )}
+              </div>
             </div>
           )}
 
@@ -325,13 +341,13 @@ export default function OwnerReportsPage() {
                 <div className="flex items-center justify-center py-24 print:hidden"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>
               ) : report && (
                 <div id="karigar-report-print">
-                  {/* Print header — hidden on screen, shown only when printing */}
-                  <div className="hidden print:block mb-6">
-                    <h1 className="text-2xl font-bold">LUXARDO FASHION</h1>
-                    <h2 className="text-lg">Karigar Production Report</h2>
-                    <p className="text-sm">{selectedKarigarName}</p>
-                    <p className="text-sm">{fmtDate(`${startDate}T00:00:00.000Z`)} – {fmtDate(`${endDate}T00:00:00.000Z`)}</p>
-                  </div>
+                  <ReportPrintHeader
+                    title="Karigar Production Report"
+                    subtitle={<>
+                      <p className="text-sm">{selectedKarigarName}</p>
+                      <p className="text-sm">{fmtDate(`${startDate}T00:00:00.000Z`)} – {fmtDate(`${endDate}T00:00:00.000Z`)}</p>
+                    </>}
+                  />
 
                   <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden print:border-0 print:shadow-none print:rounded-none">
                     <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2 print:hidden">
@@ -418,6 +434,26 @@ function KpiMini({ label, value, accent }: { label: string; value: React.ReactNo
       <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">{label}</p>
       <p className={`text-2xl font-display ${color}`}>{value}</p>
     </div>
+  );
+}
+
+/** Print-only document header — shown only when printing/exporting, never on screen. */
+function ReportPrintHeader({ title, subtitle }: { title: string; subtitle?: React.ReactNode }) {
+  return (
+    <div className="hidden print:block mb-6">
+      <h1 className="text-2xl font-bold">LUXARDO FASHION</h1>
+      <h2 className="text-lg">{title}</h2>
+      {subtitle}
+    </div>
+  );
+}
+
+/** "Export PDF" — a plain window.print() (see index.css's @media print block for the layout fix). Never shown in print itself. */
+function ExportPdfButton() {
+  return (
+    <button onClick={() => window.print()} className="flex items-center gap-1.5 px-4 py-2 border border-gray-200 rounded-lg text-[10px] font-bold uppercase tracking-widest text-gray-700 hover:bg-gray-50 print:hidden">
+      <Printer size={12} /> Export PDF
+    </button>
   );
 }
 
