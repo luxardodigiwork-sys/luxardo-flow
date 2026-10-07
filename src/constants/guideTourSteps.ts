@@ -141,7 +141,6 @@ export const GUIDE_TOUR_CONFIG: Record<GuideTourRole, GuideTourRoleConfig> = {
     welcomeBody:
       'You create Production Requests, assign Tailors, and route pieces to Store. Here is where your work happens:',
     steps: [
-      { navPath: '/production/karigars', content: 'The Karigar registry — view-only reference.' },
       { navPath: '/production/designs', content: 'Catalogue Designs — reference for creating Production Requests.' },
       { navPath: '/production/sample-designs', content: 'Sample Designs — view-only reference.' },
       { navPath: '/production/sample-pieces', content: 'Sample Pieces — view-only reference.' },

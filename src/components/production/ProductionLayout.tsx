@@ -50,7 +50,7 @@ function ProductionLayoutContent() {
       title: 'Master Data',
       items: [
         { path: '/production/staff', label: 'Staff', icon: Users, roles: ['admin','super_admin','owner'], show: can(effectiveRole as any, 'production.staff') },
-        { path: '/production/karigars', label: 'Karigars', icon: Users, roles: ['admin','super_admin','owner','pm','dispatch'], show: can(effectiveRole as any, 'production.karigars') },
+        { path: '/production/karigars', label: 'Karigars', icon: Users, roles: ['admin','super_admin','owner','pm'], show: can(effectiveRole as any, 'production.karigars') },
       ],
     },
     {

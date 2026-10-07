@@ -11,15 +11,26 @@ export default function KarigarListPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const effectiveRole = (user?.staffRole || user?.role || '') as any;
-  // View-only roles (e.g. Dispatch) can see this registry via
-  // production.karigars but must never see a create entry point the
-  // backend's requireAdmin()-gated karigarCreate would reject anyway.
+  // Route/data-layer gate — this page must never render for a role without
+  // production.karigars (previously missing entirely: reaching this route
+  // by URL rendered the full registry, including mobile/hourly rate, for
+  // ANY authenticated staff member regardless of permission). Mirrors the
+  // same self-check pattern already used by every workspace page (Guard QC,
+  // Tailor/Store/Dispatch Workspace, Store Overview, Reports). The real
+  // authority is firestore.loom.rules' karigars read rule — this is a UX
+  // guard so a denied role sees a clear message instead of a data fetch
+  // that would silently fail.
+  const canView = can(effectiveRole, 'production.karigars');
+  // View-only roles can see this registry via production.karigars but must
+  // never see a create entry point the backend's requireAdmin()-gated
+  // karigarCreate would reject anyway.
   const canWrite = can(effectiveRole, 'production.karigars.write');
   const [karigars, setKarigars] = useState<KarigarDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
   const loadKarigars = useCallback(async () => {
+    if (!canView) { setLoading(false); return; }
     try {
       const q = query(collection(db, 'karigars'), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
@@ -29,7 +40,7 @@ export default function KarigarListPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canView]);
 
   useEffect(() => { loadKarigars(); }, [loadKarigars]);
 
@@ -38,6 +49,14 @@ export default function KarigarListPage() {
     k.mobile.includes(searchTerm) ||
     k.skillTags.some(t => t.toLowerCase().includes(searchTerm.toLowerCase()))
   );
+
+  if (!canView) {
+    return (
+      <div className="text-center py-20">
+        <p className="text-sm text-gray-500">You do not have permission to view the Karigar Registry.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen p-6 md:p-8">

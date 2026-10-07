@@ -102,8 +102,11 @@ service cloud.firestore {
     }
 
     /* ── Karigars (registry, not login users) ──────────────────────── */
+    // Dispatch removed (2026-10) — a live smoke test showed the full
+    // registry (mobile, hourly rate) to a role with no legitimate need for
+    // it. Kept in exact sync with rolePermissions.ts's 'production.karigars'.
     match /karigars/{id} {
-      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm','dispatch']);
+      allow read: if isSignedIn() && isStaffInRoles(['super_admin','admin','owner','pm']);
       allow create, update, delete: if false;
     }
 

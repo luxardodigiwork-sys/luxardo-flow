@@ -140,7 +140,13 @@ const MATRIX: Record<Module, Role[]> = {
   'production.pieces.reverse':       ['super_admin','admin','owner'],
   'production.pieces.replace':       ['super_admin','admin','owner','pm'],
   'production.pieces.assignKarigar': ['super_admin','admin','owner','pm'],
-  'production.karigars':             ['super_admin','admin','owner','pm','dispatch'],
+  // Karigar registry VIEW — Dispatch was deliberately included here earlier
+  // (to see who's assigned on a piece) but a live production smoke test
+  // showed Dispatch the full registry (name, mobile, hourly rate, status) —
+  // a real PII/wage-data exposure to a role with no legitimate need for it.
+  // Owner decision: Dispatch removed. Kept in exact sync with
+  // firestore.loom.rules' karigars read rule below.
+  'production.karigars':             ['super_admin','admin','owner','pm'],
   // Master Karigar-registry create/update (karigarCreate/karigarUpdate)
   // is gated server-side by requireAdmin() — owner/admin/super_admin ONLY,
   // never pm (PM's real write access is at the piece-assignment level —

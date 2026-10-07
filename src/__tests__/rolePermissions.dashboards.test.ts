@@ -57,7 +57,12 @@ check('store.out: dispatch still denied (unaffected)', can('dispatch', 'producti
 check('store.out: store still allowed (unaffected)', can('store', 'production.store.out'), true);
 check('karigars.write: dispatch still denied (unaffected)', can('dispatch', 'production.karigars.write'), false);
 check('karigars.write: pm still denied (matches server requireAdmin, unaffected)', can('pm', 'production.karigars.write'), false);
-check('karigars: dispatch still allowed VIEW (unaffected — different from the dashboard-only restriction)', can('dispatch', 'production.karigars'), true);
+// karigars: dispatch VIEW access was intentional when this test was
+// written — superseded by a later live-production finding (Dispatch saw
+// name/mobile/hourly rate via /production/karigars). Dispatch is now
+// denied; see rolePermissions.dispatchKarigarFix.test.ts for the full
+// regression coverage of that fix.
+check('karigars: dispatch now denied VIEW (superseded — see rolePermissions.dispatchKarigarFix.test.ts)', can('dispatch', 'production.karigars'), false);
 
 // ── Reports stays locked to EXACTLY the matrix's literal role list
 // (super_admin, owner) — now a STRICT_MODULE so can()'s blanket admin bypass
