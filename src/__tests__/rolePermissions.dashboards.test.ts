@@ -4,9 +4,22 @@
  *   - production.storeOverview (read-only Store Overview, cross-role)
  *   - production.labour.cost (dashboard-level AGGREGATE labour cost card)
  *
+ * The labour.cost assertions below are deliberately the exact 11-role
+ * visibility matrix for ProductionHomePage.tsx's single "Labour" KPI card
+ * (super_admin/admin/owner/pm visible; dispatch/guard/tailor/store/designer/
+ * accounts/analysis hidden) — a source-level guard (below) additionally
+ * asserts that card exists EXACTLY ONCE in the dashboard and is gated by
+ * showLabourCostCard, so a second, unconditional copy can never silently
+ * reappear and leak aggregate labour cost to a role that shouldn't see it.
+ *
  * Run: npx tsx src/__tests__/rolePermissions.dashboards.test.ts
  */
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { can } from '../utils/rolePermissions';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let pass = true;
 const fail = (msg: string) => { console.error(`FAIL: ${msg}`); pass = false; };
@@ -55,6 +68,28 @@ check('reports: owner allowed', can('owner', 'production.reports'), true);
 check('reports: admin denied (matrix omits admin; STRICT_MODULES prevents the blanket bypass from overriding that)', can('admin', 'production.reports'), false);
 check('reports: pm denied', can('pm', 'production.reports'), false);
 check('reports: dispatch denied', can('dispatch', 'production.reports'), false);
+
+// ── Source-level guard: ProductionHomePage.tsx's dashboard "Labour" KPI
+// card must exist EXACTLY ONCE, and that one occurrence must be gated by
+// showLabourCostCard — catches a second, unconditional copy of the card
+// (the exact regression class this test was added to prevent) even
+// without a browser. ──
+{
+  const dashboardSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'pages', 'production', 'ProductionHomePage.tsx'),
+    'utf8',
+  );
+  const labourCardIndex = dashboardSrc.indexOf('label="Labour"');
+  const secondOccurrence = labourCardIndex >= 0 ? dashboardSrc.indexOf('label="Labour"', labourCardIndex + 1) : -1;
+  check('ProductionHomePage: exactly one label="Labour" KPI card exists', labourCardIndex >= 0 && secondOccurrence === -1, true);
+
+  // The nearest preceding code must be the showLabourCostCard gate — if a
+  // second, unconditional card were ever added back (or the gate removed
+  // from this one), this immediately preceding window would no longer
+  // contain it.
+  const precedingWindow = labourCardIndex >= 0 ? dashboardSrc.slice(Math.max(0, labourCardIndex - 150), labourCardIndex) : '';
+  check('ProductionHomePage: that card is immediately gated by showLabourCostCard', precedingWindow.includes('showLabourCostCard'), true);
+}
 
 if (!pass) {
   console.error('ROLE PERMISSIONS DASHBOARDS REGRESSION TEST: FAIL');
