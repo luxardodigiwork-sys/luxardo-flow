@@ -4,9 +4,17 @@ import { db } from '../../firebase';
 import { collection, getDocs, query, orderBy } from 'firebase/firestore';
 import { Users, Plus, Search, Loader2, Phone, Tag, IndianRupee } from 'lucide-react';
 import type { KarigarDoc } from '../../types/production';
+import { useAuth } from '../../context/AuthContext';
+import { can } from '../../utils/rolePermissions';
 
 export default function KarigarListPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const effectiveRole = (user?.staffRole || user?.role || '') as any;
+  // View-only roles (e.g. Dispatch) can see this registry via
+  // production.karigars but must never see a create entry point the
+  // backend's requireAdmin()-gated karigarCreate would reject anyway.
+  const canWrite = can(effectiveRole, 'production.karigars.write');
   const [karigars, setKarigars] = useState<KarigarDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -38,13 +46,15 @@ export default function KarigarListPage() {
           <h1 className="text-2xl font-display text-black tracking-wide">Karigar Registry</h1>
           <p className="text-xs text-gray-500 font-sans mt-1">Skilled labour database</p>
         </div>
-        <button
-          onClick={() => navigate('/production/karigars/new')}
-          className="flex items-center gap-2 px-5 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 transition-colors"
-        >
-          <Plus size={16} />
-          Add Karigar
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => navigate('/production/karigars/new')}
+            className="flex items-center gap-2 px-5 py-2.5 bg-black text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <Plus size={16} />
+            Add Karigar
+          </button>
+        )}
       </div>
 
       {/* Search */}

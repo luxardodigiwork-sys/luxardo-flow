@@ -139,7 +139,13 @@ const MATRIX: Record<Module, Role[]> = {
   'production.pieces.replace':       ['super_admin','admin','owner','pm'],
   'production.pieces.assignKarigar': ['super_admin','admin','owner','pm'],
   'production.karigars':             ['super_admin','admin','owner','pm','dispatch'],
-  'production.karigars.write':       ['super_admin','admin','owner','pm'],
+  // Master Karigar-registry create/update (karigarCreate/karigarUpdate)
+  // is gated server-side by requireAdmin() — owner/admin/super_admin ONLY,
+  // never pm (PM's real write access is at the piece-assignment level —
+  // production.pieces.assignKarigar / PIECE_MANAGERS, which does include
+  // pm). Kept in exact sync with that server gate so no role is ever shown
+  // a write control the backend would reject.
+  'production.karigars.write':       ['super_admin','admin','owner'],
   // Fabric Inventory V1 — view mirrors the Karigar registry precedent
   // exactly; write (master CRUD + stock receipt/issue) is PM/Admin/Owner,
   // matching functions/src/fabric.ts's FABRIC_MANAGERS server-side gate.

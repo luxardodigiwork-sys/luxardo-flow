@@ -719,7 +719,13 @@ export default function PieceDetailPage() {
         </div>
       )}
 
-      {/* Assigned karigars */}
+      {/* Assigned karigars — Karigar/labour-assignment data is only relevant
+          to the roles that manage it (super_admin/admin/owner/pm, the exact
+          production.pieces.assignKarigar allow-list already computed above
+          as canAssignKarigar); Tailor/Guard/Store never assign or need to
+          see this, so the whole section is hidden for them rather than only
+          disabling its write controls. */}
+      {canAssignKarigar && (
       <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400">Assigned Karigars</h2>
@@ -787,6 +793,7 @@ export default function PieceDetailPage() {
         )}
         {notice && <p className="mt-3 text-xs text-red-500">{notice}</p>}
       </div>
+      )}
 
       {/* Work sessions (labour) */}
       {canReadLabour && (
