@@ -8,6 +8,7 @@ import { can } from '../../utils/rolePermissions';
 import { functions } from '../../firebase';
 import { httpsCallable } from 'firebase/functions';
 import { NEXT_STAGES } from './pieceLifecycle';
+import { canRunLegacyRecovery, LEGACY_RECOVERY_PIECE_ID, LEGACY_RECOVERY_TARGET_STAGE, LEGACY_RECOVERY_ACTION } from './legacyRecovery';
 
 const STAGE_COLORS: Record<string, string> = {
   OPEN: 'bg-gray-100 text-gray-600',
@@ -79,6 +80,9 @@ export default function PieceDetailPage() {
   const [lifecycleNotice, setLifecycleNotice] = useState('');
   const [lifecycleError, setLifecycleError] = useState(false);
   const [replacementPieceId, setReplacementPieceId] = useState('');
+  const [legacyRecoveryConfirming, setLegacyRecoveryConfirming] = useState(false);
+  const [legacyRecoveryBusy, setLegacyRecoveryBusy] = useState(false);
+  const [legacyRecoveryNotice, setLegacyRecoveryNotice] = useState('');
 
   const effectiveRole = (user?.staffRole || user?.role || '') as any;
   const canAssignKarigar = can(effectiveRole, 'production.pieces.assignKarigar');
@@ -207,6 +211,7 @@ export default function PieceDetailPage() {
   const isClosed = piece.status === 'closed' || piece.status === 'replaced';
   const currentStage = piece.stage || 'OPEN';
   const nextStages = NEXT_STAGES[currentStage] || [];
+  const showLegacyRecovery = canRunLegacyRecovery(effectiveRole, piece.id, currentStage);
   const isReworked = piece.status === 'in_rework' || currentStage === 'REWORK';
   const isCompletelyRejected =
     piece.status === 'closed' &&
@@ -284,6 +289,28 @@ export default function PieceDetailPage() {
       await load();
     }
     setMoveBusy(false);
+  };
+
+  const handleLegacyRecovery = async () => {
+    if (legacyRecoveryBusy) return;
+    setLegacyRecoveryBusy(true);
+    setLegacyRecoveryNotice('');
+    try {
+      await httpsCallable(functions, 'recordPieceMovement')({
+        pieceId: LEGACY_RECOVERY_PIECE_ID,
+        toStage: LEGACY_RECOVERY_TARGET_STAGE,
+        action: LEGACY_RECOVERY_ACTION,
+        direction: 'FORWARD',
+      });
+      setLegacyRecoveryConfirming(false);
+      setLegacyRecoveryNotice(`Recovered ${LEGACY_RECOVERY_PIECE_ID} -> ${LEGACY_RECOVERY_TARGET_STAGE}.`);
+      await load();
+    } catch (err: any) {
+      console.error('Legacy recovery failed:', err);
+      setLegacyRecoveryNotice(err?.message || 'Legacy recovery failed. Please try again.');
+    } finally {
+      setLegacyRecoveryBusy(false);
+    }
   };
 
   const handleQc = async () => {
@@ -546,6 +573,66 @@ export default function PieceDetailPage() {
             </div>
           )}
           {moveNotice && <p className="mt-3 text-xs text-emerald-600">{moveNotice}</p>}
+        </div>
+      )}
+
+      {/* TEMPORARY — one-time legacy data recovery for PIECE-0001 ONLY.
+          See src/pages/production/legacyRecovery.ts for the full rationale.
+          Gated by canRunLegacyRecovery: hardcoded role list AND hardcoded
+          pieceId AND the piece's own current stage (so this disappears by
+          itself the instant the recovery succeeds). Calls the existing,
+          already-tested recordPieceMovement(QC_PASS -> DISPATCH_READY,
+          action: LEGACY_RECOVERY) path — no new backend logic. REMOVE this
+          entire block (and legacyRecovery.ts) once PIECE-0001 is recovered. */}
+      {showLegacyRecovery && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl shadow-sm p-6 mb-6">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-amber-700 mb-2">
+            ⚠ Legacy Data Recovery (Temporary)
+          </h2>
+          <p className="text-sm text-amber-800 mb-4">
+            This piece predates the automatic Guard QC_PASS → DISPATCH_READY handoff and is stuck at a
+            legacy resting stage with no routine forward move. This one-time action moves{' '}
+            <span className="font-mono">{piece.id}</span> from <span className="font-mono">QC_PASS</span> to{' '}
+            <span className="font-mono">DISPATCH_READY</span> using the existing recovery path. This control
+            is temporary and will be removed after use.
+          </p>
+          {!legacyRecoveryConfirming ? (
+            <button
+              onClick={() => { setLegacyRecoveryConfirming(true); setLegacyRecoveryNotice(''); }}
+              disabled={legacyRecoveryBusy}
+              className="px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-40"
+            >
+              Recover Legacy Piece
+            </button>
+          ) : (
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 p-3 bg-white/60 rounded-xl">
+              <p className="text-sm text-amber-900 flex-1">
+                Confirm: move <span className="font-mono">{piece.id}</span> QC_PASS → DISPATCH_READY
+                (LEGACY_RECOVERY)?
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleLegacyRecovery}
+                  disabled={legacyRecoveryBusy}
+                  className="px-4 py-1.5 bg-amber-700 text-white rounded-lg text-xs font-bold uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-40"
+                >
+                  {legacyRecoveryBusy ? 'Recovering…' : 'Confirm Recovery'}
+                </button>
+                <button
+                  onClick={() => setLegacyRecoveryConfirming(false)}
+                  disabled={legacyRecoveryBusy}
+                  className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-gray-200 transition-colors disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {legacyRecoveryNotice && (
+            <p className={`mt-3 text-xs ${legacyRecoveryNotice.startsWith('Recovered') ? 'text-emerald-700' : 'text-red-600'}`}>
+              {legacyRecoveryNotice}
+            </p>
+          )}
         </div>
       )}
 
