@@ -76,6 +76,22 @@
       "collectionGroup": "pieceWorkSessions",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "pieceId", "order": "ASCENDING" },
+        { "fieldPath": "startedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "karigars",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "active", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pieceWorkSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "karigarId", "order": "ASCENDING" },
         { "fieldPath": "startedAt", "order": "ASCENDING" }
       ]
