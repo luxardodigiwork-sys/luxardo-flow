@@ -141,3 +141,12 @@ export {
   totpDisable,
   totpStatus,
 } from "../../functions/src/totp";
+
+/* Final Role Dashboards & Reporting phase — server-side aggregation for the
+ * cross-role read-only Store Overview and Owner/Super Admin labour
+ * reporting. FLOW-only: no B2C counterpart. */
+export {
+  storeOverviewReport,
+  ownerLabourSummary,
+  karigarProductionReport,
+} from "../../functions/src/reports";

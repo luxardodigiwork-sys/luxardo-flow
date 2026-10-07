@@ -118,6 +118,22 @@
   }
 }
 
+/* Loom Production Reports — "Export PDF" is a plain window.print() (no PDF
+   library added; the browser's own print-to-PDF covers this). The shell's
+   fixed-height/overflow-hidden flex layout (ProductionLayout.tsx) would
+   otherwise clip the print output to one screen's worth of content, so
+   printing resets exactly those three containers to a normal flowing block
+   and hides the sidebar/mobile header — scoped to their ids so this never
+   touches any other page's print output. */
+@media print {
+  #loom-sidebar, #loom-mobile-header { display: none !important; }
+  #loom-shell-root, #loom-main, #loom-content-scroll {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+}
+
 @keyframes slow-zoom {
   from { transform: scale(1); }
   to { transform: scale(1.05); }

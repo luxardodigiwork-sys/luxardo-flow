@@ -216,7 +216,7 @@ export default function TailorWorkspacePage() {
                     onChange={(e) => setNote((s) => ({ ...s, [piece.id]: e.target.value }))}
                   />
                   <button
-                    disabled={busyId === piece.id || uploadingId === piece.id || !(imageUrl[piece.id] || '').trim()}
+                    disabled={busyId === piece.id || uploadingId === piece.id}
                     onClick={() => completeStitching(piece.id)}
                     className="px-4 py-2 bg-black text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-30"
                   >

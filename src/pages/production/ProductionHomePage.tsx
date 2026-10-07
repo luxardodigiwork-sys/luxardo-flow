@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../../firebase';
+import { db, functions } from '../../firebase';
 import { collection, getDocs, query, orderBy, where } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { useAuth } from '../../context/AuthContext';
 import { roleLabel, can, type Role } from '../../utils/rolePermissions';
 import { isLoomHost } from '../../utils/loomIdentity';
 import {
   Layers, Users, Package, FileText, TrendingUp, Palette, Scissors, Shirt, ClipboardList,
-  Loader2, Clock, AlertCircle, ArrowRight
+  Loader2, Clock, AlertCircle, ArrowRight, Warehouse, BarChart3
 } from 'lucide-react';
 
 const STAGE_ORDER = [
@@ -72,6 +73,7 @@ export default function ProductionHomePage() {
   const [pieces, setPieces] = useState<any[]>([]);
   const [prs, setPrs] = useState<any[]>([]);
   const [karigars, setKarigars] = useState<any[]>([]);
+  const [execSummary, setExecSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   // Read gates mirror the Firestore rules so a role never queries a collection
@@ -79,6 +81,21 @@ export default function ProductionHomePage() {
   const canReadPieces = can(effectiveRole, 'production.pieces');
   const canReadPrs = can(effectiveRole, 'production.requests');
   const canReadKarigars = can(effectiveRole, 'production.karigars');
+  // Dashboard-only: a karigar HEADCOUNT is still karigar-registry detail
+  // Dispatch's routing-focused job doesn't need, even though Dispatch keeps
+  // its existing production.karigars VIEW permission elsewhere (e.g. seeing
+  // who's assigned on a Piece). Narrower than canReadKarigars on purpose —
+  // this does not change production.karigars itself.
+  const showKarigarCard = canReadKarigars && effectiveRole !== 'dispatch';
+  // Aggregate labour minutes/cost on the dashboard — never shown to
+  // dispatch/guard/tailor/store/designer/accounts/analysis.
+  const showLabourCostCard = can(effectiveRole, 'production.labour.cost');
+  const showStoreOverviewLink = can(effectiveRole, 'production.storeOverview');
+  const showReportsLink = can(effectiveRole, 'production.reports');
+  // The full executive section (period labour cards + Karigar summary) is
+  // its own, separate server call — only fetched for the Owner/Super Admin
+  // tier (production.reports), never added to every role's dashboard load.
+  const showExecutiveSection = showReportsLink;
 
   const load = useCallback(async () => {
     try {
@@ -103,18 +120,25 @@ export default function ProductionHomePage() {
             .catch(err => console.error('Failed to load PRs:', err))
         );
       }
-      if (canReadKarigars) {
+      if (showKarigarCard) {
         jobs.push(
           getDocs(query(collection(db, 'karigars'), orderBy('createdAt', 'desc')))
             .then(snap => setKarigars(snap.docs.map(d => d.data())))
             .catch(err => console.error('Failed to load karigars:', err))
         );
       }
+      if (showExecutiveSection) {
+        jobs.push(
+          httpsCallable(functions, 'ownerLabourSummary')({})
+            .then((res: any) => setExecSummary(res?.data || null))
+            .catch(err => console.error('Failed to load executive summary:', err))
+        );
+      }
       await Promise.all(jobs);
     } finally {
       setLoading(false);
     }
-  }, [canReadPieces, canReadPrs, canReadKarigars]);
+  }, [canReadPieces, canReadPrs, showKarigarCard, showExecutiveSection]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -134,6 +158,26 @@ export default function ProductionHomePage() {
 
   const pipeline = STAGE_ORDER.map(stage => ({ stage, count: pieces.filter(p => (p.stage || 'OPEN') === stage).length }))
     .filter(g => g.count > 0);
+
+  // ── Owner/Super Admin executive KPI list (14 items, as specified) ──
+  const countStage = (stage: string) => pieces.filter(p => (p.stage || 'OPEN') === stage).length;
+  const ACTIVE_STAGES = ['IN_WORK', 'QC_PENDING', 'REWORK', 'QC_PASS', 'DISPATCH_READY', 'TAILOR_ASSIGNED', 'STITCHING', 'STITCH_COMPLETE', 'STORE'];
+  const execKpis = showExecutiveSection ? [
+    { label: 'Total Physical Pieces', value: totalPieces },
+    { label: 'Pieces in Production', value: pieces.filter(p => ACTIVE_STAGES.includes(p.stage || 'OPEN')).length },
+    { label: 'Open Pieces', value: countStage('OPEN') },
+    { label: 'QC Pending', value: countStage('QC_PENDING') },
+    { label: 'Rework', value: countStage('REWORK') },
+    { label: 'Rejected', value: countStage('REJECTED') },
+    { label: 'Stitching', value: countStage('STITCHING') },
+    { label: 'Stitch Complete', value: countStage('STITCH_COMPLETE') },
+    { label: 'Store', value: countStage('STORE') },
+    { label: 'Store-Out', value: countStage('STORE_OUT') },
+    { label: 'Active Production Requests', value: prs.filter(p => p.status !== 'COMPLETED').length },
+    { label: 'Completed Production', value: prs.filter(p => p.status === 'COMPLETED').length },
+    { label: 'Total Labour Minutes', value: totalLabourMinutes },
+    { label: 'Total Labour Cost', value: `₹${totalLabourCost.toFixed(2)}` },
+  ] : [];
 
   return (
     <div className="min-h-screen p-6 md:p-8">
@@ -164,11 +208,15 @@ export default function ProductionHomePage() {
             </div>
             <KpiCard icon={<Package size={18} />} label="In Production" value={inProduction} sub="stage IN_WORK" />
             <KpiCard icon={<Clock size={18} />} label="Open Pieces" value={openPieces} sub="not yet started" />
-            {canReadKarigars && (
+            {showKarigarCard && (
               <KpiCard icon={<Users size={18} />} label="Active Karigars" value={activeKarigars} sub="registry · non-login" />
             )}
             <KpiCard icon={<AlertCircle size={18} />} label="Rework / Rejects" value={`${reworkPieces} / ${rejectedPieces}`} sub={`${totalReworks} rework cycles`} />
-            <KpiCard icon={<FileText size={18} />} label="Labour" value={totalLabourMinutes} sub={`₹${totalLabourCost.toFixed(2)}`} />
+            {/* Aggregate labour minutes/cost — never shown to dispatch/guard/
+                tailor/store/designer/accounts/analysis (production.labour.cost). */}
+            {showLabourCostCard && (
+              <KpiCard icon={<FileText size={18} />} label="Labour" value={totalLabourMinutes} sub={`₹${totalLabourCost.toFixed(2)}`} />
+            )}
             {canReadPrs && (
               <KpiCard icon={<TrendingUp size={18} />} label="Active Requests" value={prs.filter(p => p.status !== 'COMPLETED').length} sub={`${prs.length} approved total`} />
             )}
@@ -192,6 +240,79 @@ export default function ProductionHomePage() {
               )}
             </div>
           </div>
+
+          {/* ── Owner / Super Admin executive dashboard ────────────────── */}
+          {showExecutiveSection && (
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 mb-8">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-bold text-sm uppercase tracking-widest text-black">Executive Overview</h2>
+                {showReportsLink && (
+                  <button onClick={() => navigate('/production/reports')} className="flex items-center gap-1 text-xs text-gray-400 hover:text-black transition-colors">
+                    Full reports <ArrowRight size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                {execKpis.map(k => (
+                  <div key={k.label} className="p-3 bg-gray-50 rounded-xl">
+                    <p className="text-lg font-display text-black">{k.value}</p>
+                    <p className="text-[9px] text-gray-400 uppercase tracking-widest mt-1">{k.label}</p>
+                  </div>
+                ))}
+              </div>
+
+              {execSummary && (
+                <>
+                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mt-6 mb-3">Labour Cost — By Period</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    {([
+                      ['Today', execSummary.periods?.today],
+                      ['Yesterday', execSummary.periods?.yesterday],
+                      ['Last 7 Days', execSummary.periods?.last7Days],
+                      ['Current Month', execSummary.periods?.currentMonth],
+                    ] as const).map(([label, card]) => card && (
+                      <div key={label} className="p-4 bg-gray-50 rounded-xl">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">{label}</p>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div><span className="font-display text-black text-lg">{card.totalLabourMinutes}</span><p className="text-[9px] text-gray-400 uppercase">min</p></div>
+                          <div><span className="font-display text-black text-lg">₹{Number(card.totalLabourCost).toFixed(2)}</span><p className="text-[9px] text-gray-400 uppercase">cost</p></div>
+                          <div><span className="text-gray-600">{card.completedSessions}</span><p className="text-[9px] text-gray-400 uppercase">sessions</p></div>
+                          <div><span className="text-gray-600">{card.piecesWorked}</span><p className="text-[9px] text-gray-400 uppercase">pieces</p></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {Array.isArray(execSummary.karigars) && execSummary.karigars.length > 0 && (
+                    <>
+                      <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mt-6 mb-3">Karigar Summary (all-time)</h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead><tr className="border-b border-gray-100">
+                            {['Karigar', 'Pieces', 'Minutes', 'Cost', 'Avg Min/Piece', 'Rework'].map(h => (
+                              <th key={h} className="text-left px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">{h}</th>
+                            ))}
+                          </tr></thead>
+                          <tbody>
+                            {execSummary.karigars.slice(0, 8).map((k: any) => (
+                              <tr key={k.karigarId} className="border-b border-gray-50">
+                                <td className="px-3 py-2 font-medium text-black">{k.name}</td>
+                                <td className="px-3 py-2 font-mono">{k.piecesWorked}</td>
+                                <td className="px-3 py-2 font-mono">{k.totalMinutes}</td>
+                                <td className="px-3 py-2 font-mono">₹{Number(k.totalLabourCost).toFixed(2)}</td>
+                                <td className="px-3 py-2 font-mono">{k.avgMinutesPerPiece}</td>
+                                <td className="px-3 py-2 font-mono">{k.reworkPieces}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* Running Production (approved PRs with generation progress) */}
           {canReadPrs && (
@@ -258,7 +379,7 @@ export default function ProductionHomePage() {
                 </div>
               </a>
               )}
-              {canReadKarigars && (
+              {showKarigarCard && (
                 <a
                   href="/production/karigars"
                   className="flex items-center gap-3 p-4 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors"
@@ -303,6 +424,30 @@ export default function ProductionHomePage() {
                   <div>
                     <p className="text-sm font-medium text-black">Staff Management</p>
                     <p className="text-[10px] text-gray-400 uppercase tracking-widest">Create & manage staff roles</p>
+                  </div>
+                </a>
+              )}
+              {showStoreOverviewLink && (
+                <a
+                  href="/production/store-overview"
+                  className="flex items-center gap-3 p-4 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors"
+                >
+                  <Warehouse size={18} className="text-gray-400" />
+                  <div>
+                    <p className="text-sm font-medium text-black">Store Overview</p>
+                    <p className="text-[10px] text-gray-400 uppercase tracking-widest">Read-only · per-design standing</p>
+                  </div>
+                </a>
+              )}
+              {showReportsLink && (
+                <a
+                  href="/production/reports"
+                  className="flex items-center gap-3 p-4 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors"
+                >
+                  <BarChart3 size={18} className="text-gray-400" />
+                  <div>
+                    <p className="text-sm font-medium text-black">Production Reports</p>
+                    <p className="text-[10px] text-gray-400 uppercase tracking-widest">Labour, Karigar &amp; Rework reports</p>
                   </div>
                 </a>
               )}

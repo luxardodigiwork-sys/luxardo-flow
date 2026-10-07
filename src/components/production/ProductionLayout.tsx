@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Layers, Package, FileText,
-  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox, HelpCircle
+  LogOut, Menu, X, ChevronRight, Settings, Shield, Palette, Scissors, Shirt, ClipboardList, ShieldCheck, UserRound, Truck, Warehouse, Inbox, HelpCircle, BarChart3
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { can, roleBadgeLabel } from '../../utils/rolePermissions';
@@ -76,6 +76,15 @@ function ProductionLayoutContent() {
         { path: '/production/tailor', label: 'Tailor Workspace', icon: Scissors, roles: ['tailor'], show: can(effectiveRole as any, 'production.tailor') },
         { path: '/production/store', label: 'Store Workspace', icon: Warehouse, roles: ['store'], show: can(effectiveRole as any, 'production.store') && can(effectiveRole as any, 'production.pieces') },
         { path: '/production/tailor-requests', label: 'Tailor Requests', icon: Inbox, roles: ['owner'], show: can(effectiveRole as any, 'production.tailorRequests.review') },
+        // Read-only, cross-role — deliberately distinct from "Store Workspace"
+        // above (store-only, has Store-Out controls). Never exposes Store-Out.
+        { path: '/production/store-overview', label: 'Store Overview', icon: Warehouse, roles: ['super_admin','admin','owner','guard','pm','designer','dispatch','analysis','store'], show: can(effectiveRole as any, 'production.storeOverview') },
+      ],
+    },
+    {
+      title: 'Reporting',
+      items: [
+        { path: '/production/reports', label: 'Production Reports', icon: BarChart3, roles: ['super_admin','admin','owner'], show: can(effectiveRole as any, 'production.reports') },
       ],
     },
     // "System" links point into the separate B2C storefront app — never shown
@@ -114,9 +123,9 @@ function ProductionLayoutContent() {
   };
 
   return (
-    <div className={`h-screen flex font-sans selection:bg-black selection:text-white overflow-hidden ${isDark ? 'bg-gray-950 text-white' : 'bg-gray-50 text-black'}`}>
+    <div id="loom-shell-root" className={`h-screen flex font-sans selection:bg-black selection:text-white overflow-hidden ${isDark ? 'bg-gray-950 text-white' : 'bg-gray-50 text-black'}`}>
       {/* ── Desktop Sidebar ── */}
-      <aside className={`w-64 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20 border-r ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+      <aside id="loom-sidebar" className={`w-64 flex-col hidden md:flex h-screen shrink-0 overflow-hidden z-20 border-r ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
         <div className={`p-8 border-b flex flex-col justify-center min-h-[100px] shrink-0 ${isDark ? 'border-gray-800' : 'border-gray-100'}`}>
           <FlowLogo size="md" variant={isDark ? 'inverse' : 'default'} />
           {/* Persistent role identity (V1 Stabilization Step 2) — sourced
@@ -284,9 +293,9 @@ function ProductionLayoutContent() {
       </AnimatePresence>
 
       {/* ── Main Content ── */}
-      <main className={`flex-1 flex flex-col h-screen min-h-0 min-w-0 overflow-hidden ${isDark ? 'bg-gray-950' : 'bg-gray-50/50'}`}>
+      <main id="loom-main" className={`flex-1 flex flex-col h-screen min-h-0 min-w-0 overflow-hidden ${isDark ? 'bg-gray-950' : 'bg-gray-50/50'}`}>
         {/* Mobile Header */}
-        <header className={`md:hidden backdrop-blur-md border-b px-4 h-16 flex justify-between items-center shrink-0 z-30 shadow-sm ${isDark ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'}`}>
+        <header id="loom-mobile-header" className={`md:hidden backdrop-blur-md border-b px-4 h-16 flex justify-between items-center shrink-0 z-30 shadow-sm ${isDark ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'}`}>
           <div className="flex items-center gap-3 min-w-0">
             <button onClick={() => setIsMobileMenuOpen(true)} className={`p-2 -ml-2 rounded-lg transition-colors shrink-0 ${isDark ? 'text-white hover:bg-gray-800' : 'text-black hover:bg-gray-100'}`}>
               <Menu size={20} />
@@ -305,7 +314,7 @@ function ProductionLayoutContent() {
           </button>
         </header>
 
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 md:p-8 lg:p-10">
+        <div id="loom-content-scroll" className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 md:p-8 lg:p-10">
           <Outlet />
         </div>
       </main>

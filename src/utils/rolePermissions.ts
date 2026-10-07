@@ -80,6 +80,8 @@ type Module =
   | 'production.store'
   | 'production.store.out'
   | 'production.store.out.issue'
+  | 'production.storeOverview'
+  | 'production.labour.cost'
   | 'production.reports'
   | 'production.reports.export'
   | 'production.audit'
@@ -174,6 +176,20 @@ const MATRIX: Record<Module, Role[]> = {
   // Strict, matching storeOutCreate/storeOutReportIssue's backend gate.
   'production.store.out':            ['store'],
   'production.store.out.issue':      ['store'],
+  // Read-only Store Overview (Final Dashboard phase) — matches
+  // STORE_OVERVIEW_ROLES in functions/src/reports.ts's storeOverviewReport
+  // exactly. Deliberately separate from 'production.store' (which also
+  // gates the real Store Workspace's Store-Out controls for the store
+  // role) so this view-only page can never be mistaken for a grant of
+  // Store-Out capability to any other role.
+  'production.storeOverview':        ['super_admin','admin','owner','guard','pm','designer','dispatch','analysis','store'],
+  // Dashboard-level AGGREGATE labour minutes/cost visibility (the Owner
+  // Dashboard's "Labour" KPI card). Narrower than 'production.labour'
+  // (which also gates the per-piece Work Sessions panel on Piece Detail,
+  // already relied upon elsewhere and left unchanged) — dispatch/guard/
+  // tailor/store/designer/accounts/analysis must never see aggregate
+  // labour cost on the dashboard.
+  'production.labour.cost':          ['super_admin','admin','owner','pm'],
   'production.reports':              ['super_admin','owner'],
   'production.reports.export':       ['super_admin','owner'],
   'production.audit':                ['super_admin','admin','owner'],
@@ -209,6 +225,17 @@ const STRICT_MODULES = new Set<Module>([
   'production.store.out',
   'production.store.out.issue',
   'production.staff.manage',
+  // Final Dashboard phase — the matrix's own array ([super_admin, owner])
+  // conspicuously omits admin, unlike almost every other module, and the
+  // new server-side ownerLabourSummary/karigarProductionReport callables
+  // (functions/src/reports.ts REPORTS_ROLES) are deliberately super_admin/
+  // owner ONLY, matching that literal intent. Without this, can()'s own
+  // blanket admin bypass would show admin a Reports page the server
+  // rejects — exactly the UI/server mismatch class already fixed for
+  // Dispatch's "Add Karigar" earlier. Reports is new as of this phase, so
+  // there is no prior admin-relied-upon behavior being revoked here.
+  'production.reports',
+  'production.reports.export',
 ]);
 
 /**
