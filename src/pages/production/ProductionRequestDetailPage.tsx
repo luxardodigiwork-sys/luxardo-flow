@@ -63,7 +63,7 @@ export default function ProductionRequestDetailPage() {
   const canReject = can(effectiveRole as any, 'production.requests.reject');
   // Submit is allowed for the creator roles (dispatch/admin/owner), not PM
   const canSubmit = can(effectiveRole as any, 'production.requests') && !isPM;
-  const canGeneratePieces = can(effectiveRole as any, 'production.pieces');
+  const canGeneratePieces = can(effectiveRole as any, 'production.pieces.generate');
 
   const loadRequest = useCallback(async () => {
     if (!id) return;

@@ -62,6 +62,7 @@ type Module =
   | 'production.pieces.reverse'
   | 'production.pieces.replace'
   | 'production.pieces.assignKarigar'
+  | 'production.pieces.generate'
   | 'production.karigars'
   | 'production.karigars.write'
   | 'production.fabric'
@@ -140,6 +141,7 @@ const MATRIX: Record<Module, Role[]> = {
   'production.pieces.reverse':       ['super_admin','admin','owner'],
   'production.pieces.replace':       ['super_admin','admin','owner','pm'],
   'production.pieces.assignKarigar': ['super_admin','admin','owner','pm'],
+  'production.pieces.generate':      ['super_admin','admin','owner','pm'],
   // Karigar registry VIEW — Dispatch was deliberately included here earlier
   // (to see who's assigned on a piece) but a live production smoke test
   // showed Dispatch the full registry (name, mobile, hourly rate, status) —
@@ -242,6 +244,7 @@ const STRICT_MODULES = new Set<Module>([
   // there is no prior admin-relied-upon behavior being revoked here.
   'production.reports',
   'production.reports.export',
+  'production.pieces.generate',
 ]);
 
 /**
